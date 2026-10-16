@@ -1,0 +1,18 @@
+[Unit]
+Description=StudyLog 初中生学习成绩记录系统
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/studylog
+EnvironmentFile=/opt/studylog/.env
+# 内存硬约束：异常膨胀由 cgroup 限制而非拖垮整机（对应开发手册 7.5）
+ExecStart=/usr/bin/node --max-old-space-size=384 --disable-warning=ExperimentalWarning server/src/server.js
+Restart=always
+RestartSec=3
+MemoryMax=450M
+StandardOutput=append:/opt/studylog/logs/stdout.log
+StandardError=append:/opt/studylog/logs/stderr.log
+
+[Install]
+WantedBy=multi-user.target

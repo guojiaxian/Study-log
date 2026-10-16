@@ -1,0 +1,10 @@
+node_modules/
+dist/
+data/
+backups/
+logs/
+.env
+*.log
+*.bak.*
+*.pre-import-*.bak
+.DS_Store

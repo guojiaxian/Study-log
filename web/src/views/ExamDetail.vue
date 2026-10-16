@@ -124,17 +124,18 @@ async function remove() {
 
       <div class="card">
         <h2>各科明细</h2>
+        <p class="scroll-hint">← 可左右滑动查看全部列 →</p>
         <div class="table-wrap">
           <table class="tbl">
-            <thead><tr><th class="l">科目</th><th>得分</th><th>中考满分</th><th>单科班级排名</th><th>等级</th><th>缺考</th></tr></thead>
+            <thead><tr><th class="l">科目</th><th>得分</th><th class="hide-sm">中考满分</th><th>单科班级排名</th><th>等级</th><th class="hide-sm">缺考</th></tr></thead>
             <tbody>
               <tr v-for="s in scoreRows" :key="s.subjectId">
                 <td class="l">{{ s.subjectName }}</td>
                 <td>{{ s.isAbsent ? '—' : fmt(s.score) }}</td>
-                <td class="muted">{{ s.scoreMode === 'grade' ? '等级制' : fmt(s.fullScore, 0) }}</td>
+                <td class="muted hide-sm">{{ s.scoreMode === 'grade' ? '等级制' : fmt(s.fullScore, 0) }}</td>
                 <td class="muted">{{ s.classRank ?? '—' }}</td>
                 <td>{{ s.gradeLevel ?? '—' }}</td>
-                <td>{{ s.isAbsent ? '是' : '' }}</td>
+                <td class="hide-sm">{{ s.isAbsent ? '是' : '' }}</td>
               </tr>
             </tbody>
           </table>

@@ -66,6 +66,7 @@ function barWidth(gap) {
           <h2>与目标院校录取线的差距</h2>
           <span class="small muted">{{ lineMode === 'avg3y' ? '近三年均值' : '最近一年' }}</span>
         </div>
+        <p class="scroll-hint">← 可左右滑动查看全部列 →</p>
         <div class="table-wrap">
           <table class="tbl">
             <thead><tr><th class="l">学校</th><th>近三年录取线</th><th>采用线</th><th>差距</th><th class="l" style="width: 180px">提分空间</th></tr></thead>

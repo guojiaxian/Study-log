@@ -16,7 +16,7 @@ async function load() {
   loading.value = true;
   try {
     const [subs, types, sch] = await Promise.all([
-      api.subjects(true), api.examTypes(), api.schools(),
+      api.subjects(true), api.examTypes(true), api.schools(),
     ]);
     subjects.value = subs.list;
     examTypes.value = types.list;
@@ -32,6 +32,28 @@ async function saveSubject(s) {
       countsToTotal: s.countsToTotal, startGrade: s.startGrade, sortOrder: s.sortOrder, isActive: s.isActive,
     });
     flash(`已保存科目「${s.name}」`);
+  } catch (e) { error.value = e.message; }
+}
+
+async function saveExamType(t) {
+  try {
+    await api.updateExamType(t.id, { name: t.name, sortOrder: t.sortOrder, isActive: t.isActive });
+    flash(`已保存类型「${t.name}」`);
+  } catch (e) { error.value = e.message; }
+}
+
+async function addExamType() {
+  const name = window.prompt('考试类型名称（如 联考、摸底考）');
+  if (!name) return;
+  try {
+    // 标识（code）用于成绩关联，此处自动生成 customN，避免中文名称无法作为标识
+    const used = new Set(examTypes.value.map((t) => t.code));
+    let n = 1;
+    while (used.has(`custom${n}`)) n += 1;
+    const maxOrder = examTypes.value.reduce((m, t) => Math.max(m, Number(t.sortOrder) || 0), 0);
+    await api.createExamType({ code: `custom${n}`, name, sortOrder: maxOrder + 10 });
+    await load();
+    flash(`已新增类型「${name}」`);
   } catch (e) { error.value = e.message; }
 }
 
@@ -75,13 +97,14 @@ async function delSchool(school) {
 
 <template>
   <div>
-    <div v-if="error" class="notice">{{ error }}</div>
-    <div v-if="okMsg" class="notice notice-info">{{ okMsg }}</div>
+    <div v-if="error" class="notice toast toast-top">{{ error }}</div>
+    <div v-if="okMsg" class="notice notice-info toast">{{ okMsg }}</div>
     <div v-if="loading" class="loading">加载中…</div>
 
     <template v-else>
       <div class="card">
         <h2>科目配置</h2>
+        <p class="scroll-hint">← 可左右滑动查看全部列 →</p>
         <div class="table-wrap">
           <table class="tbl">
             <thead><tr><th class="l">科目</th><th>满分</th><th class="l">计分</th><th>计入总分</th><th>启用</th><th></th></tr></thead>
@@ -104,9 +127,24 @@ async function delSchool(school) {
       </div>
 
       <div class="card">
-        <h2>考试类型</h2>
-        <div class="chips">
-          <span v-for="t in examTypes" :key="t.code" class="tag" :class="{ 'tag-primary': t.isActive }">{{ t.name }}</span>
+        <div class="card-title">
+          <h2>考试类型</h2>
+          <button class="btn btn-sm" @click="addExamType">+ 新增类型</button>
+        </div>
+        <p class="scroll-hint">← 可左右滑动查看全部列 →</p>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th class="l">名称</th><th class="l">标识</th><th>排序</th><th>启用</th><th></th></tr></thead>
+            <tbody>
+              <tr v-for="t in examTypes" :key="t.id">
+                <td class="l"><input v-model="t.name" style="width: 150px" /></td>
+                <td class="l"><code class="small muted">{{ t.code }}</code></td>
+                <td><input v-model.number="t.sortOrder" type="number" min="0" style="width: 70px" /></td>
+                <td style="text-align: center"><input v-model="t.isActive" type="checkbox" style="width: auto" /></td>
+                <td><button class="btn btn-sm" @click="saveExamType(t)">保存</button></td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </div>
 

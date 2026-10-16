@@ -101,8 +101,20 @@ h3 { font-size: 15px; }
 }
 .notice-info { background: var(--primary-weak); border-color: #bfdbfe; color: #1e40af; }
 
+/* 浮动提示：行内保存/报错反馈固定在可视区域，避免页面顶部提示被滚动出视野 */
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); z-index: 40;
+  bottom: 24px; margin: 0; max-width: calc(100% - 20px);
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.12);
+}
+.toast-top { top: 64px; bottom: auto; }
+
 /* ---------- 表格 ---------- */
 .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+/* 移动端“可左右滑动”提示：仅在窄屏显示 */
+.scroll-hint { display: none; color: var(--muted); font-size: 12px; margin: 0 0 6px; }
+/* 移动端可省略的低优先级列（如满分、均值、缺考标记等） */
+.hide-sm { display: table-cell; }
 table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
 table.tbl th, table.tbl td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; }
 table.tbl th:first-child, table.tbl td:first-child,
@@ -176,7 +188,9 @@ textarea { min-height: 120px; resize: vertical; }
 @media (max-width: 899px) {
   .layout { display: block; padding-bottom: 62px; }
   .sidebar { display: none; }
-  .content { padding: 12px 12px 24px; }
+  .content { padding: 12px 10px 24px; }
+  h1 { font-size: 18px; }
+  .card { padding: 12px; }
   .topbar {
     display: flex; align-items: center; justify-content: space-between;
     background: var(--card); border-bottom: 1px solid var(--line);
@@ -184,6 +198,11 @@ textarea { min-height: 120px; resize: vertical; }
   }
   .topbar .brand { padding: 0; font-size: 16px; }
   .topbar .actions { display: flex; gap: 12px; font-size: 13px; color: var(--muted); }
+  /* 顶栏“管理”入口做成胶囊状，配合齿轮图标更像可点按钮 */
+  .topbar .actions a {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: #fff;
+  }
   .bottom-nav {
     display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
     background: var(--card); border-top: 1px solid var(--line);
@@ -195,7 +214,26 @@ textarea { min-height: 120px; resize: vertical; }
   .bottom-nav a.active { color: var(--primary); font-weight: 600; }
   .bottom-nav a .ico { display: block; font-size: 17px; line-height: 1.2; }
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
-  .chart { height: 260px; }
+  .chart { height: 240px; }
+  .chart-sm { height: 180px; }
+
+  /* 表单与筛选：窄屏统一两列排布，避免出现半宽空位 */
+  .row { gap: 8px; }
+  .row > .field, .filters .field { flex: 1 1 calc(50% - 4px); min-width: 0; }
+  .filters { gap: 8px; }
+  .filters > .btn { flex: 0 0 auto; }
+  .step { padding: 4px 10px; }
+
+  /* 表格：缩小字号与内边距，让更多列在窄屏内可见 */
+  table.tbl { font-size: 12px; }
+  table.tbl th, table.tbl td { padding: 6px 8px; }
+  .sticky-col { box-shadow: 6px 0 8px -8px rgba(15, 23, 42, 0.25); }
+  .scroll-hint { display: block; }
+  .hide-sm { display: none !important; }
+  .pager { flex-wrap: wrap; justify-content: space-between; }
+  .stat .value { font-size: 20px; }
+  .toast { bottom: 74px; }
+  .toast-top { top: 58px; bottom: auto; }
 }
 @media (min-width: 900px) {
   .bottom-nav { display: none; }

@@ -127,20 +127,21 @@ const subjectRows = computed(() =>
 
       <div class="card">
         <h2>各科概况（本次 vs 上次 vs 均值）</h2>
+        <p class="scroll-hint">← 可左右滑动查看全部列 →</p>
         <div class="table-wrap">
           <table class="tbl">
             <thead>
               <tr>
-                <th class="l">科目</th><th>满分</th><th>本次</th><th>较上次</th><th>历史均值</th><th>vs 均值</th><th>判定</th><th>单科排名</th>
+                <th class="l">科目</th><th class="hide-sm">满分</th><th>本次</th><th>较上次</th><th class="hide-sm">历史均值</th><th>vs 均值</th><th>判定</th><th>单科排名</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="s in subjectRows" :key="s.subjectId">
                 <td class="l">{{ s.subjectName }}</td>
-                <td class="muted">{{ fmt(s.fullScore, 0) }}</td>
+                <td class="muted hide-sm">{{ fmt(s.fullScore, 0) }}</td>
                 <td>{{ s.isAbsent ? '缺考' : fmt(s.latest) }}</td>
                 <td :class="trendClass(s.deltaVsPrev)">{{ trendArrow(s.deltaVsPrev) }} {{ signed(s.deltaVsPrev) }}</td>
-                <td class="muted">{{ fmt(s.avgScore) }}</td>
+                <td class="muted hide-sm">{{ fmt(s.avgScore) }}</td>
                 <td :class="trendClass(s.deltaVsAvg)">{{ signed(s.deltaVsAvg) }}</td>
                 <td :class="VERDICT[s.verdict].cls">{{ VERDICT[s.verdict].text }}</td>
                 <td class="muted">{{ s.classRank ?? '—' }}</td>

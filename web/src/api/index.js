@@ -33,7 +33,9 @@ export const api = {
   createSubject: (p) => http.post('/subjects', p),
   updateSubject: (id, p) => http.patch(`/subjects/${id}`, p),
   deleteSubject: (id) => http.delete(`/subjects/${id}`),
-  examTypes: () => http.get('/exam-types'),
+  examTypes: (includeInactive = false) => http.get('/exam-types', { params: { includeInactive } }),
+  createExamType: (p) => http.post('/exam-types', p),
+  updateExamType: (id, p) => http.patch(`/exam-types/${id}`, p),
 
   // 考试
   exams: (params) => http.get('/exams', { params }),

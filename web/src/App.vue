@@ -15,9 +15,9 @@ const nav = [
 const bottomNav = [
   { to: '/', label: '首页', icon: '🏠' },
   { to: '/trend', label: '趋势', icon: '📈' },
-  { to: '/exams', label: '成绩', icon: '📋' },
+  { to: '/exams', label: '总览', icon: '📋' },
   { to: '/targets', label: '目标', icon: '🎯' },
-  { to: '/manage', label: '管理', icon: '⚙️' },
+  { to: '/analysis', label: '分析', icon: '🧠' },
 ];
 
 const isActive = (to) => {
@@ -51,9 +51,7 @@ const isActive = (to) => {
       <header class="topbar">
         <div class="brand">StudyLog</div>
         <div class="actions">
-          <RouterLink to="/analysis">分析</RouterLink>
-          <RouterLink to="/targets">目标</RouterLink>
-          <RouterLink to="/manage">管理</RouterLink>
+          <RouterLink to="/manage">⚙️ 管理</RouterLink>
         </div>
       </header>
 

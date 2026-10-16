@@ -43,7 +43,8 @@ const cellText = (cell, col) => {
     <div class="card-title">
       <h1>历次考试总览</h1>
       <div class="row" style="gap: 8px">
-        <RouterLink to="/entry/manual" class="btn btn-primary btn-sm">+ 新建考试</RouterLink>
+        <RouterLink to="/entry/manual" class="btn btn-primary btn-sm">+ 手动录入</RouterLink>
+        <RouterLink to="/entry/ai" class="btn btn-sm">+ 批量录入</RouterLink>
         <a class="btn btn-sm" href="/api/v1/export?format=csv">导出 CSV</a>
         <a class="btn btn-sm" href="/api/v1/export?format=json">导出 JSON</a>
       </div>
@@ -66,30 +67,38 @@ const cellText = (cell, col) => {
       <div v-if="loading" class="loading">加载中…</div>
       <div v-else-if="error" class="notice">{{ error }}</div>
       <div v-else-if="!matrix.rows.length" class="empty">
-        还没有考试记录，<RouterLink to="/entry/manual">先录入第一次成绩 →</RouterLink>
+        还没有考试记录，<RouterLink to="/manage">去录入第一次成绩 →</RouterLink>
       </div>
       <template v-else>
+        <p class="scroll-hint">← 可左右滑动查看各科分数 →</p>
         <div class="table-wrap">
           <table class="tbl">
             <thead>
               <tr>
                 <th class="l sticky-col">日期</th>
                 <th class="l">考试名称</th>
-                <th class="l">类型</th>
+                <th class="l hide-sm">类型</th>
                 <th>总分</th>
-                <th>班级</th>
-                <th>年级</th>
+                <th class="hide-sm">班级</th>
+                <th class="hide-sm">年级</th>
                 <th v-for="c in matrix.columns" :key="c.subjectId">{{ c.name }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="r in matrix.rows" :key="r.examId" style="cursor: pointer" @click="$router.push(`/exams/${r.examId}`)">
                 <td class="l sticky-col">{{ r.examDate }}</td>
-                <td class="l">{{ r.name }}</td>
-                <td class="l muted">{{ examTypeName(r.examType) }}</td>
+                <td class="l">
+                  {{ r.name }}
+                  <div class="small muted mobile-only">
+                    {{ examTypeName(r.examType) }}
+                    <template v-if="r.classRank"> · 班 {{ r.classRank }}/{{ r.classSize }}</template>
+                    <template v-if="r.gradeRank"> · 校 {{ r.gradeRank }}/{{ r.gradeSize }}</template>
+                  </div>
+                </td>
+                <td class="l muted hide-sm">{{ examTypeName(r.examType) }}</td>
                 <td>{{ fmt(r.totalScore) }}</td>
-                <td>{{ r.classRank ? `${r.classRank}/${r.classSize}` : '—' }}</td>
-                <td>{{ r.gradeRank ? `${r.gradeRank}/${r.gradeSize}` : '—' }}</td>
+                <td class="hide-sm">{{ r.classRank ? `${r.classRank}/${r.classSize}` : '—' }}</td>
+                <td class="hide-sm">{{ r.gradeRank ? `${r.gradeRank}/${r.gradeSize}` : '—' }}</td>
                 <td v-for="(c, i) in matrix.columns" :key="c.subjectId">{{ cellText(r.cells[i], c) }}</td>
               </tr>
             </tbody>

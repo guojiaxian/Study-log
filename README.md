@@ -159,7 +159,7 @@ bash deploy/deploy.sh
 | `npm start` | 生产模式启动 |
 | `npm run dev` | 开发模式启动（`node --watch`） |
 | `npm run migrate` | 单独执行数据库迁移 |
-| `npm run seed:demo` | 灌入演示数据（10 次考试） |
+| `npm run seed:demo` | 灌入演示数据（10 次考试；会先清空现有考试数据，勿在生产执行） |
 | `npm test` | 运行 Vitest 单元测试 |
 | `bash deploy/deploy.sh` | 服务器上一键发版 |
 
@@ -169,11 +169,55 @@ bash deploy/deploy.sh
 - 健康检查：`GET /api/v1/health` → `{ status, dbReady, rssMb, uptimeSec, version, time }`，免鉴权，可用于外部探活。
 - 错误码表与完整报文契约见 [docs/02-开发手册.md](docs/02-开发手册.md) 第 5 章，大模型契约见第 6 章。
 
-## 数据与备份
+## 数据备份与迁移
+
+### 全新数据库里有什么
+
+迁移脚本 [001_init.sql](server/src/db/migrations/001_init.sql) 会灌入**字典**：11 个科目、9 种考试类型、3 所目标院校及其录取线、默认配置（含科目别名表）。**考试与成绩不在种子里**，因此全新部署后首页是空的，需要自行录入或从备份导入。
+
+> `npm run seed:demo` 灌的是**演示数据**（10 场文化课 + 体育 + 实验）。它的第一步是 `DELETE FROM exam_score; DELETE FROM exam;`，会清空已有考试数据，**只适合本地开发，不要在生产环境执行**。
+
+### 导出备份
+
+```bash
+# 完整备份（JSON：科目、考试类型、考试与成绩、目标院校、配置、AI 分析报告）
+curl -s 'http://127.0.0.1:3000/api/v1/export' -o studylog-backup.json
+
+# 成绩表（CSV，UTF-8 BOM，可直接用 Excel 打开；可用 from/to 限定日期范围）
+curl -s 'http://127.0.0.1:3000/api/v1/export?format=csv&from=2026-09-01&to=2027-01-31' -o studylog.csv
+```
+
+导出是只读操作，不影响正在运行的服务。
+
+### 恢复 / 迁移到新机器
+
+```bash
+# 新机器：导入备份（覆盖式恢复）
+curl -s -X POST http://127.0.0.1:3000/api/v1/import \
+  -H 'Content-Type: application/json' \
+  --data-binary @studylog-backup.json
+```
+
+导入是**覆盖式恢复**：先清空考试/成绩/科目/院校/配置/报告，再全量写入。整个过程在单个事务内（失败自动回滚），且执行前会自动生成 `data/studylog.db.pre-import-<时间戳>.bak` 快照，可据此回退。返回体包含导入条数与快照路径。
+
+不经过接口、直接搬数据库文件也可以，但**两端都要先停服务**——WAL 模式下未做 checkpoint 时只拷 `.db` 会丢最近写入：
+
+```bash
+# 旧机器
+systemctl stop studylog
+scp data/studylog.db <新机器>:/tmp/
+# 新机器
+systemctl stop studylog
+cp /tmp/studylog.db data/studylog.db
+rm -f data/studylog.db-wal data/studylog.db-shm
+systemctl start studylog
+```
+
+### 其它
 
 - 主库 `data/studylog.db`，WAL 模式；`PRAGMA cache_size` / `mmap_size` 按 2GB 内存预算收紧。
 - 迁移前会自动对数据库做一次快照（`*.bak.NNN`）。
-- `data/`、`backups/`、`logs/`、`.env` 均不入 Git；换机器时只需带走 `.env` 与 `data/studylog.db`。
+- `data/`、`backups/`、`logs/`、`.env` 均不入 Git；换机器时只需带走 `.env` 与 `data/studylog.db`（或上面的 JSON 备份）。
 
 ## 文档
 

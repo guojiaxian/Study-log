@@ -4,15 +4,17 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/studylog
-EnvironmentFile=/opt/studylog/.env
+# 未指定 User= 时以 root 运行，因此代码可以放在仅 root 可访问的 /root 下；
+# 若将来改为降权用户运行，需把目录移到 /opt 等 0755 路径，且不要启用 ProtectHome=true。
+WorkingDirectory=/root/studylog
+EnvironmentFile=/root/studylog/.env
 # 内存硬约束：异常膨胀由 cgroup 限制而非拖垮整机（对应开发手册 7.5）
 ExecStart=/usr/bin/node --max-old-space-size=384 --disable-warning=ExperimentalWarning server/src/server.js
 Restart=always
 RestartSec=3
 MemoryMax=450M
-StandardOutput=append:/opt/studylog/logs/stdout.log
-StandardError=append:/opt/studylog/logs/stderr.log
+StandardOutput=append:/root/studylog/logs/stdout.log
+StandardError=append:/root/studylog/logs/stderr.log
 
 [Install]
 WantedBy=multi-user.target

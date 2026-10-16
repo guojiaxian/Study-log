@@ -114,32 +114,41 @@ npm start              # 启动服务（等价于 node server/src/server.js）
 
 默认拓扑：公网 → Node.js（Fastify，systemd 守护），同一进程既提供 `/api/v1/*` 接口，也托管 `web/dist` 静态页，不引入 Nginx。
 
-```bash
-# 服务器一次性初始化
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt-get install -y nodejs git curl
+默认部署目录为 `/root/studylog`，服务以 root 运行（单元文件未指定 `User=`）。改用其它目录时只需同步修改 `deploy/studylog.service` 的 `WorkingDirectory` / `EnvironmentFile` 与 `deploy/deploy.sh` 的 `APP_DIR`。
 
-sudo mkdir -p /opt/studylog && sudo chown "$USER" /opt/studylog
-git clone https://github.com/guojiaxian/Study-log.git /opt/studylog
-cd /opt/studylog
+```bash
+# 服务器一次性初始化（以下命令均以 root 执行）
+# 1) 系统级安装 Node（单元文件写死了 /usr/bin/node，不要用 nvm）
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs git curl
+
+# 2) 生成部署密钥并添加到 GitHub 仓库（Settings → Deploy keys，勾选 Allow write access）
+#    仅需写权限用于拉取时可用更简单的 Personal Access Token + HTTPS 克隆
+ssh-keygen -t ed25519 -C "studylog-server" -f /root/.ssh/id_ed25519 -N ""
+cat /root/.ssh/id_ed25519.pub
+
+# 3) 拉取代码
+git clone git@github.com:guojiaxian/Study-log.git /root/studylog
+cd /root/studylog
 cp .env.example .env && chmod 600 .env      # 填入 AI_API_KEY
 mkdir -p logs
 
-sudo cp deploy/studylog.service /etc/systemd/system/
-sudo systemctl daemon-reload && sudo systemctl enable --now studylog
-sudo ufw allow 3000/tcp                     # 云厂商安全组同样需放行
+# 4) 安装守护并启动
+cp deploy/studylog.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now studylog
+ufw allow 3000/tcp                          # 云厂商安全组同样需放行
 
 # 之后每次发版
 bash deploy/deploy.sh
 ```
 
-部署脚本会依次执行：校验 Node 版本 → 对齐远端分支 → `npm ci` → 构建前端 → 重启 systemd → 健康检查。
+部署脚本会依次执行：校验 Node 版本 → 对齐远端分支 → `npm ci` → 构建前端 → 重启 systemd → 健康检查（脚本会在 root 下自动跳过 `sudo`）。
 
 注意事项：
 
 - systemd 单元里 `ExecStart=/usr/bin/node` 是绝对路径，因此请用**系统级安装**的 Node（NodeSource / 发行版包），不要用 nvm。
-- `WorkingDirectory` 与 `EnvironmentFile` 用的是绝对路径（默认 `/opt/studylog`）。想放到别的目录（含 home）时，需要同步改这三处：`deploy/studylog.service` 的 `WorkingDirectory` / `EnvironmentFile`、`deploy/deploy.sh` 的 `APP_DIR`。
-- 应用无鉴权，公网直开端口意味着任何能访问该端口的人都能读写数据；建议用安全组限制来源 IP，或在前面加 Nginx 做 Basic Auth / HTTPS。
+- 代码放在 `/root` 下可行的前提是"以 root 运行"：`/root` 权限为 `0700`，一旦给单元加上 `User=` 降权，普通用户无法穿越该目录，此时应把代码移到 `/opt`，并且不要启用 `ProtectHome=true`。
+- 应用无鉴权且以 root 运行，公网直开端口意味着任何能访问该端口的人都能读写数据；建议用安全组限制来源 IP，或在前面加 Nginx 做 Basic Auth / HTTPS。
 
 ## 常用命令
 

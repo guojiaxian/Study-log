@@ -122,8 +122,8 @@ npm start              # 启动服务（等价于 node server/src/server.js）
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs git curl
 
-# 2) 生成部署密钥并添加到 GitHub 仓库（Settings → Deploy keys，勾选 Allow write access）
-#    仅需写权限用于拉取时可用更简单的 Personal Access Token + HTTPS 克隆
+# 2) 若仓库为私有：生成部署密钥并添加到 GitHub（Settings → Deploy keys）
+#    deploy.sh 只做 fetch/pull，密钥授予读权限即可；公开仓库可跳过本步
 ssh-keygen -t ed25519 -C "studylog-server" -f /root/.ssh/id_ed25519 -N ""
 cat /root/.ssh/id_ed25519.pub
 

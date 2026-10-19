@@ -31,8 +31,7 @@ const isActive = (to) => {
   <div class="layout">
     <aside class="sidebar">
       <div class="brand">
-        StudyLog
-        <small>初中生学习成绩记录</small>
+        孙晗菲的学习记录
       </div>
       <nav>
         <RouterLink
@@ -49,7 +48,7 @@ const isActive = (to) => {
 
     <div style="flex: 1; min-width: 0">
       <header class="topbar">
-        <div class="brand">StudyLog</div>
+        <div class="brand">孙晗菲的学习记录</div>
         <div class="actions">
           <RouterLink to="/manage">⚙️ 管理</RouterLink>
         </div>

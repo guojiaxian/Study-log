@@ -22,7 +22,8 @@ const router = createRouter({
 });
 
 router.afterEach((to) => {
-  document.title = `${to.meta?.title ?? ''} · StudyLog`;
+  const name = to.meta?.title ?? '';
+  document.title = name ? `${name} · 孙晗菲的学习记录` : '孙晗菲的学习记录';
 });
 
 export default router;

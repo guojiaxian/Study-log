@@ -3,7 +3,7 @@ import path from 'node:path';
 import { getDb, transaction, audit } from '../db/index.js';
 import { Err } from '../lib/errors.js';
 
-const TABLES = ['subject', 'exam_type_dict', 'app_config', 'target_school'];
+const TABLES = ['subject', 'subject_grade', 'exam_type_dict', 'app_config', 'target_school'];
 
 /* ------------------------------------------------------------------ */
 /* 导出                                                               */
@@ -21,9 +21,11 @@ export function exportJson() {
   const admissions = db.prepare('SELECT * FROM school_admission_score ORDER BY school_id, year').all();
 
   return {
-    version: 1,
+    version: 2,
     exportedAt: new Date().toISOString(),
     subjects: db.prepare('SELECT * FROM subject ORDER BY sort_order, id').all(),
+    // 按 (科目, 学段) 的满分/计分/启用配置（迁移 004）
+    subjectGrades: db.prepare('SELECT * FROM subject_grade ORDER BY grade, sort_order, subject_id').all(),
     examTypes: db.prepare('SELECT * FROM exam_type_dict ORDER BY sort_order, id').all(),
     exams: exams.map((e) => ({ ...e, scores: scoresByExam.get(e.id) ?? [] })),
     schools: schools.map((s) => ({ ...s, admissionScores: admissions.filter((a) => a.school_id === s.id) })),
@@ -38,41 +40,79 @@ function csvCell(v) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-export function exportCsv({ from, to } = {}) {
+export function exportCsv({ from, to, grade } = {}) {
   const db = getDb();
   const where = ["e.status = 'confirmed'"];
   const params = [];
   if (from) { where.push('e.exam_date >= ?'); params.push(from); }
   if (to) { where.push('e.exam_date <= ?'); params.push(to); }
+  if (grade) { where.push('e.grade = ?'); params.push(Number(grade)); }
 
-  const exams = db.prepare(`SELECT exam_id AS id, name, exam_type, exam_date, class_rank, class_size, grade_rank, grade_size,
-                            total_score FROM v_exam_summary e WHERE ${where.join(' AND ')} ORDER BY e.exam_date ASC`).all(...params);
-  const subjects = db.prepare('SELECT id, code, name, full_score, counts_to_total FROM subject ORDER BY sort_order, id').all();
-  const visible = subjects.filter((s) => s.counts_to_total === 1);
+  const exams = db.prepare(`SELECT exam_id AS id, name, exam_type, exam_date, grade, class_rank, class_size,
+                            grade_rank, grade_size, total_score, entered_full_score
+                            FROM v_exam_summary e WHERE ${where.join(' AND ')} ORDER BY e.exam_date ASC`).all(...params);
 
-  const scores = db.prepare(`SELECT exam_id, subject_id, score, grade_level, is_absent FROM exam_score`).all();
+  // 列 = 两个学段「计入总分的计分科目」按 code 去重的并集（初三口径在前，初二独有科目追加）
+  const sgRows = db.prepare(`SELECT sg.subject_id AS id, sg.grade, sg.full_score AS fullScore,
+                             sg.counts_to_total AS countsToTotal, sg.is_active AS isActive, sg.sort_order AS sortOrder,
+                             s.code, s.name, s.score_mode AS scoreMode
+                             FROM subject_grade sg JOIN subject s ON s.id = sg.subject_id
+                             ORDER BY sg.grade DESC, sg.sort_order, sg.subject_id`).all();
+  const byGrade = new Map();
+  for (const r of sgRows) {
+    if (!byGrade.has(r.grade)) byGrade.set(r.grade, []);
+    byGrade.get(r.grade).push(r);
+  }
+  const scoreCols = [];
+  const seenCode = new Set();
+  for (const g of [9, 8]) {
+    for (const s of byGrade.get(g) ?? []) {
+      if (!s.countsToTotal || s.scoreMode !== 'score' || seenCode.has(s.code)) continue;
+      seenCode.add(s.code);
+      scoreCols.push(s);
+    }
+  }
+  const gradeCols = [];
+  for (const g of [9, 8]) {
+    for (const s of byGrade.get(g) ?? []) {
+      if (s.scoreMode !== 'grade' || seenCode.has(s.code)) continue;
+      seenCode.add(s.code);
+      gradeCols.push(s);
+    }
+  }
+  // 「科目 id 在各学段的计分口径」——决定某次考试该科目是否计入总分
+  const countByGrade = new Map();
+  for (const r of sgRows) {
+    if (!countByGrade.has(r.grade)) countByGrade.set(r.grade, new Set());
+    if (r.countsToTotal) countByGrade.get(r.grade).add(r.id);
+  }
+
+  const scores = db.prepare('SELECT exam_id, subject_id, score, grade_level, is_absent FROM exam_score').all();
   const idx = new Map();
   for (const s of scores) idx.set(`${s.exam_id}:${s.subject_id}`, s);
 
-  const header = ['日期', '考试名称', '类型', '总分', '班级排名', '年级排名',
-    ...visible.map((s) => s.name), '生物', '地理'];
+  const scoreCell = (examId, sub) => {
+    const r = idx.get(`${examId}:${sub.id}`);
+    if (!r) return '';
+    if (r.is_absent) return '缺考';
+    return r.score ?? '';
+  };
+
+  const header = ['日期', '考试名称', '类型', '学段', '总分', '总分满分', '班级排名', '年级排名',
+    ...scoreCols.map((s) => s.name), ...gradeCols.map((s) => s.name)];
   const lines = [header.map(csvCell).join(',')];
-  const bio = subjects.find((s) => s.code === 'biology');
-  const geo = subjects.find((s) => s.code === 'geography');
 
   for (const e of exams) {
+    const counted = countByGrade.get(e.grade) ?? new Set();
     const row = [
-      e.exam_date, e.name, e.exam_type, e.total_score,
+      e.exam_date, e.name, e.exam_type, e.grade === 8 ? '初二' : e.grade === 9 ? '初三' : e.grade,
+      e.total_score, e.entered_full_score,
       e.class_rank ? `${e.class_rank}/${e.class_size ?? ''}` : '',
       e.grade_rank ? `${e.grade_rank}/${e.grade_size ?? ''}` : '',
-      ...visible.map((s) => {
-        const r = idx.get(`${e.id}:${s.id}`);
-        if (!r) return '';
-        if (r.is_absent) return '缺考';
-        return r.score ?? '';
-      }),
-      bio ? (idx.get(`${e.id}:${bio.id}`)?.grade_level ?? '') : '',
-      geo ? (idx.get(`${e.id}:${geo.id}`)?.grade_level ?? '') : '',
+      // 该学段未计入总分 / 未开设的科目输出空值，避免与 0 分混淆
+      ...scoreCols.map((s) => (counted.has(s.id) ? scoreCell(e.id, s) : '')),
+      // 等级制科目（生物/地理）输出等级字母
+      ...gradeCols.map((s) => idx.get(`${e.id}:${s.id}`)?.grade_level ?? ''),
     ];
     lines.push(row.map(csvCell).join(','));
   }
@@ -80,13 +120,13 @@ export function exportCsv({ from, to } = {}) {
   return `\uFEFF${lines.join('\r\n')}`;
 }
 
-export function exportData({ format = 'json', from, to } = {}) {
+export function exportData({ format = 'json', from, to, grade } = {}) {
   const stamp = new Date().toISOString().slice(0, 10);
   if (format === 'csv' || format === 'xlsx') {
     return {
       contentType: 'text/csv; charset=utf-8',
       filename: `studylog-${stamp}.csv`,
-      body: exportCsv({ from, to }),
+      body: exportCsv({ from, to, grade }),
       note: format === 'xlsx' ? 'Excel 导出以 CSV（UTF-8 BOM）呈现，可直接用 Excel 打开' : undefined,
     };
   }
@@ -122,13 +162,22 @@ export function importData(payload = {}) {
     // 清空（按外键安全顺序）
     tx.exec(`DELETE FROM exam_score; DELETE FROM exam; DELETE FROM analysis_report; DELETE FROM ai_parse_task;
              DELETE FROM school_admission_score; DELETE FROM target_school;
-             DELETE FROM subject; DELETE FROM exam_type_dict; DELETE FROM app_config;`);
+             DELETE FROM subject_grade; DELETE FROM subject; DELETE FROM exam_type_dict; DELETE FROM app_config;`);
     try { tx.exec('DELETE FROM sqlite_sequence;'); } catch { /* 表可能不存在 */ }
 
     const insSubject = tx.prepare(`INSERT INTO subject (id, code, name, full_score, score_mode, counts_to_total, start_grade, sort_order, is_active)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const s of payload.subjects) {
       insSubject.run(s.id, s.code, s.name, s.full_score, s.score_mode, s.counts_to_total, s.start_grade, s.sort_order, s.is_active);
+    }
+
+    // 按学段的科目配置（迁移 004）。旧版备份文件无该字段时跳过，由迁移的默认字典兜底。
+    const insSubGrade = tx.prepare(`INSERT INTO subject_grade (subject_id, grade, full_score, counts_to_total, is_active, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?)`);
+    let gradeCfgCount = 0;
+    for (const g of payload.subjectGrades ?? []) {
+      insSubGrade.run(g.subject_id, g.grade, g.full_score, g.counts_to_total, g.is_active, g.sort_order);
+      gradeCfgCount += 1;
     }
 
     const insType = tx.prepare('INSERT INTO exam_type_dict (id, code, name, sort_order, is_active) VALUES (?, ?, ?, ?, ?)');
@@ -150,11 +199,13 @@ export function importData(payload = {}) {
       }
     }
 
-    const insSchool = tx.prepare('INSERT INTO target_school (id, name, short_name, is_target, sort_order, remark) VALUES (?, ?, ?, ?, ?, ?)');
+    const insSchool = tx.prepare(`INSERT INTO target_school (id, name, short_name, is_target, sort_order, remark, line_mode, custom_line)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
     const insAdm = tx.prepare(`INSERT INTO school_admission_score (id, school_id, year, admission_type, min_score, total_full_score, batch, remark)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
     for (const s of payload.schools ?? []) {
-      insSchool.run(s.id, s.name, s.short_name, s.is_target, s.sort_order, s.remark);
+      insSchool.run(s.id, s.name, s.short_name, s.is_target, s.sort_order, s.remark,
+        s.line_mode ?? 'avg3y', s.custom_line ?? null);
       for (const a of s.admissionScores ?? []) {
         insAdm.run(a.id, s.id, a.year, a.admission_type, a.min_score, a.total_full_score, a.batch, a.remark);
       }
@@ -170,7 +221,7 @@ export function importData(payload = {}) {
         r.content_md, r.strengths, r.weaknesses, r.suggestions, r.created_at);
     }
 
-    audit('data.import', null, `exams=${examCount},scores=${scoreCount}`);
-    return { imported: { exams: examCount, scores: scoreCount }, snapshot: snap };
+    audit('data.import', null, `exams=${examCount},scores=${scoreCount},gradeCfg=${gradeCfgCount}`);
+    return { imported: { exams: examCount, scores: scoreCount, subjectGrades: gradeCfgCount }, snapshot: snap };
   });
 }

@@ -1,22 +1,30 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '../api/index.js';
-import { fmt, examTypeName } from '../utils/format.js';
+import GradeChips from '../components/GradeChips.vue';
+import { fmt } from '../utils/format.js';
 
 const loading = ref(true);
 const error = ref('');
 const matrix = ref(null);
 const examTypes = ref([]);
-const filter = reactive({ type: '', from: '', to: '', page: 1, pageSize: 20 });
+const filter = reactive({ type: '', grade: '', page: 1, pageSize: 20 });
 
-async function load() {
-  loading.value = true;
+const GRADE_OPTIONS = [
+  { value: '8', label: '初二' },
+  { value: '9', label: '初三' },
+  { value: '', label: '全部' },
+];
+
+function onGradeChange(v) { filter.grade = v; filter.page = 1; load({ silent: true }); }
+
+async function load(opts = {}) {
+  if (!opts.silent) loading.value = true;
   error.value = '';
   try {
     matrix.value = await api.matrix({
       types: filter.type || undefined,
-      from: filter.from || undefined,
-      to: filter.to || undefined,
+      grade: filter.grade || undefined,
       page: filter.page,
       pageSize: filter.pageSize,
     });
@@ -53,15 +61,16 @@ const cellText = (cell, col) => {
     <div class="card">
       <div class="filters">
         <div class="field">
+          <label>学段</label>
+          <GradeChips :model-value="filter.grade" :options="GRADE_OPTIONS" @update:model-value="onGradeChange" />
+        </div>
+        <div class="field">
           <label>类型</label>
           <select v-model="filter.type" @change="filter.page = 1; load()">
             <option value="">全部</option>
             <option v-for="t in examTypes" :key="t.code" :value="t.code">{{ t.name }}</option>
           </select>
         </div>
-        <div class="field"><label>起始</label><input v-model="filter.from" type="date" @change="filter.page = 1; load()" /></div>
-        <div class="field"><label>结束</label><input v-model="filter.to" type="date" @change="filter.page = 1; load()" /></div>
-        <button class="btn btn-sm" @click="filter.type = ''; filter.from = ''; filter.to = ''; filter.page = 1; load()">重置</button>
       </div>
 
       <div v-if="loading" class="loading">加载中…</div>
@@ -75,30 +84,26 @@ const cellText = (cell, col) => {
           <table class="tbl">
             <thead>
               <tr>
-                <th class="l sticky-col">日期</th>
-                <th class="l">考试名称</th>
-                <th class="l hide-sm">类型</th>
+                <th class="l sticky-col col-date">日期</th>
+                <th class="l col-name">考试名称</th>
+                <th>排名</th>
                 <th>总分</th>
-                <th class="hide-sm">班级</th>
-                <th class="hide-sm">年级</th>
                 <th v-for="c in matrix.columns" :key="c.subjectId">{{ c.name }}</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="r in matrix.rows" :key="r.examId" style="cursor: pointer" @click="$router.push(`/exams/${r.examId}`)">
-                <td class="l sticky-col">{{ r.examDate }}</td>
-                <td class="l">
-                  {{ r.name }}
-                  <div class="small muted mobile-only">
-                    {{ examTypeName(r.examType) }}
-                    <template v-if="r.classRank"> · 班 {{ r.classRank }}/{{ r.classSize }}</template>
-                    <template v-if="r.gradeRank"> · 校 {{ r.gradeRank }}/{{ r.gradeSize }}</template>
-                  </div>
+                <td class="l sticky-col col-date">{{ r.examDate.slice(5) }}</td>
+                <td class="l col-name">{{ r.name }}</td>
+                <td>
+                  <template v-if="r.classRank || r.gradeRank">
+                    <template v-if="r.classRank">{{ r.classRank }}</template>
+                    <template v-if="r.classRank && r.gradeRank"> / </template>
+                    <template v-if="r.gradeRank">{{ r.gradeRank }}</template>
+                  </template>
+                  <template v-else>—</template>
                 </td>
-                <td class="l muted hide-sm">{{ examTypeName(r.examType) }}</td>
-                <td>{{ fmt(r.totalScore) }}</td>
-                <td class="hide-sm">{{ r.classRank ? `${r.classRank}/${r.classSize}` : '—' }}</td>
-                <td class="hide-sm">{{ r.gradeRank ? `${r.gradeRank}/${r.gradeSize}` : '—' }}</td>
+                <td>{{ fmt(r.totalScore) }}<small class="muted">/{{ fmt(r.enteredFullScore, 0) }}</small></td>
                 <td v-for="(c, i) in matrix.columns" :key="c.subjectId">{{ cellText(r.cells[i], c) }}</td>
               </tr>
             </tbody>
@@ -113,3 +118,16 @@ const cellText = (cell, col) => {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 日期、考试名称收窄：名称换行增高，把宽度留给分数列 */
+.col-date {
+  width: 4.5em;
+  white-space: nowrap;
+}
+.col-name {
+  max-width: 11em;
+  word-break: break-all;
+  line-height: 1.4;
+}
+</style>

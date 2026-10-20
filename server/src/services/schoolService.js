@@ -1,8 +1,24 @@
 import { getDb, audit } from '../db/index.js';
 import { Err } from '../lib/errors.js';
-import { subjectMap, asBool } from './subjectService.js';
+import { subjectMap, asBool, gradeFullScore } from './subjectService.js';
 import { getExam } from './examService.js';
-import { pickLineScore, gapOf, latestPerSubjectTotal, BASE_FULL_SCORE } from '../lib/schoolCompare.js';
+import { pickLineScore, gapOf, latestPerSubjectTotal, round1 } from '../lib/schoolCompare.js';
+
+/**
+ * 目标院校录取线是**中考（初三 730）口径**，因此对比基数只取初三学段的成绩：
+ * 初二尚未开设化学、也无体育/实验成绩，混入会让差距虚高（产品手册 FR-7 学段约定）。
+ */
+export const TARGET_GRADE = 9;
+
+const LINE_MODES = ['avg3y', 'latest', 'custom'];
+
+/** 归一化采用线方式：非法值回退 avg3y；custom 需要有效分数线，否则视为未设置 */
+function normalizeLineMode(lineMode, customLine) {
+  const mode = LINE_MODES.includes(lineMode) ? lineMode : 'avg3y';
+  const line = customLine == null || customLine === '' ? null : Number(customLine);
+  if (mode === 'custom' && (line == null || !Number.isFinite(line) || line < 0)) return { mode: 'avg3y', customLine: null };
+  return { mode, customLine: line };
+}
 
 function shapeSchool(row, scores = []) {
   return {
@@ -12,6 +28,8 @@ function shapeSchool(row, scores = []) {
     isTarget: asBool(row.isTarget),
     sortOrder: row.sortOrder,
     remark: row.remark ?? null,
+    lineMode: row.lineMode ?? 'avg3y',
+    customLine: row.customLine ?? null,
     admissionScores: scores,
     avgScore3y: pickLineScore(scores, 'avg3y').score,
   };
@@ -27,14 +45,18 @@ function admissionRows(schoolId) {
 
 export function listSchools() {
   const rows = getDb()
-    .prepare('SELECT id, name, short_name AS shortName, is_target AS isTarget, sort_order AS sortOrder, remark FROM target_school ORDER BY sort_order, id')
+    .prepare(`SELECT id, name, short_name AS shortName, is_target AS isTarget, sort_order AS sortOrder, remark,
+              line_mode AS lineMode, custom_line AS customLine
+              FROM target_school ORDER BY sort_order, id`)
     .all();
   return rows.map((r) => shapeSchool(r, admissionRows(r.id)));
 }
 
 export function getSchool(id) {
   const row = getDb()
-    .prepare('SELECT id, name, short_name AS shortName, is_target AS isTarget, sort_order AS sortOrder, remark FROM target_school WHERE id = ?')
+    .prepare(`SELECT id, name, short_name AS shortName, is_target AS isTarget, sort_order AS sortOrder, remark,
+              line_mode AS lineMode, custom_line AS customLine
+              FROM target_school WHERE id = ?`)
     .get(id);
   if (!row) throw Err.notFound('目标院校不存在');
   return shapeSchool(row, admissionRows(id));
@@ -59,11 +81,15 @@ export function updateSchool(id, patch = {}) {
   const db = getDb();
   const cur = db.prepare('SELECT * FROM target_school WHERE id = ?').get(id);
   if (!cur) throw Err.notFound('目标院校不存在');
+  const { mode, customLine } = normalizeLineMode(
+    patch.lineMode ?? cur.line_mode,
+    patch.customLine ?? cur.custom_line,
+  );
   db.prepare(`UPDATE target_school SET name=?, short_name=?, is_target=?, sort_order=?, remark=?,
-              updated_at=datetime('now','localtime') WHERE id=?`)
+              line_mode=?, custom_line=?, updated_at=datetime('now','localtime') WHERE id=?`)
     .run(patch.name ?? cur.name, patch.shortName ?? cur.short_name,
       (patch.isTarget ?? cur.is_target) ? 1 : 0, Number(patch.sortOrder ?? cur.sort_order),
-      patch.remark ?? cur.remark, id);
+      patch.remark ?? cur.remark, mode, customLine, id);
   audit('school.update', `school:${id}`);
   return getSchool(id);
 }
@@ -123,7 +149,6 @@ export function deleteAdmissionScore(schoolId, scoreId) {
 
 export function compareSchools(opts = {}) {
   const db = getDb();
-  const lineMode = opts.lineMode === 'latest' ? 'latest' : 'avg3y';
   const mode = opts.examId ? 'examId' : 'latestPerSubject';
 
   let myTotal = null;
@@ -132,19 +157,24 @@ export function compareSchools(opts = {}) {
 
   if (opts.examId) {
     const e = getExam(opts.examId);
+    if (e.grade !== TARGET_GRADE) {
+      throw Err.validation('目标院校录取线为中考口径，仅支持按初三（grade=9）的考试对比');
+    }
     myTotal = e.totalScore;
   } else {
-    const subs = subjectMap();
+    const subs = subjectMap(TARGET_GRADE);
     const scoreSubjects = [...subs.values()].filter((s) => s.countsToTotal && s.scoreMode === 'score');
     const rows = db
       .prepare(`SELECT s.subject_id AS subjectId, s.score, s.is_absent AS isAbsent,
                 e.id AS examId, e.exam_date AS examDate, sub.name AS subjectName,
-                sub.counts_to_total AS countsToTotal, sub.score_mode AS scoreMode
+                COALESCE(sg.counts_to_total, sub.counts_to_total) AS countsToTotal,
+                sub.score_mode AS scoreMode
                 FROM exam_score s
                 JOIN exam e ON e.id = s.exam_id
                 JOIN subject sub ON sub.id = s.subject_id
-                WHERE e.status = 'confirmed'`)
-      .all();
+                LEFT JOIN subject_grade sg ON sg.subject_id = s.subject_id AND sg.grade = ?
+                WHERE e.status = 'confirmed' AND e.grade = ?`)
+      .all(TARGET_GRADE, TARGET_GRADE);
     const res = latestPerSubjectTotal(rows);
     myTotal = res.total;
     components = res.components;
@@ -153,7 +183,9 @@ export function compareSchools(opts = {}) {
   }
 
   const schools = db
-    .prepare('SELECT id, name, short_name AS shortName, sort_order AS sortOrder FROM target_school WHERE is_target = 1 ORDER BY sort_order, id')
+    .prepare(`SELECT id, name, short_name AS shortName, sort_order AS sortOrder,
+              line_mode AS lineMode, custom_line AS customLine
+              FROM target_school WHERE is_target = 1 ORDER BY sort_order, id`)
     .all();
 
   const schoolRows = schools.map((sch) => {
@@ -161,12 +193,19 @@ export function compareSchools(opts = {}) {
       .prepare(`SELECT year, min_score AS minScore, total_full_score AS totalFullScore
                 FROM school_admission_score WHERE school_id = ? AND admission_type = '统招' ORDER BY year DESC`)
       .all(sch.id);
-    const picked = pickLineScore(rows, lineMode);
+    // 采用线方式按院校逐校配置（管理页可改）：avg3y / latest / custom
+    let picked;
+    if (sch.lineMode === 'custom' && sch.customLine != null) {
+      picked = { score: round1(sch.customLine), years: [], mode: 'custom' };
+    } else {
+      picked = pickLineScore(rows, sch.lineMode === 'latest' ? 'latest' : 'avg3y');
+    }
     const gap = gapOf(picked.score, myTotal);
     return {
       schoolId: sch.id,
       name: sch.name,
       shortName: sch.shortName,
+      lineMode: picked.mode,
       lineScore: picked.score,
       lineYears: picked.years,
       gap,
@@ -176,11 +215,12 @@ export function compareSchools(opts = {}) {
   });
 
   return {
-    basis: { mode, myTotal, totalFullScore: BASE_FULL_SCORE, components, missingSubjects },
-    lineMode,
+    basis: { mode, grade: TARGET_GRADE, myTotal, totalFullScore: gradeFullScore(TARGET_GRADE), components, missingSubjects },
     schools: schoolRows,
     notes: [
       'gap = 录取线 − 中考口径总分；负值表示还需提分，正值表示已超线',
+      '各校采用线方式独立配置（近三年均值/最近一年/自定义），见管理页「目标院校」',
+      '中考口径总分只取初三学段各计分科目「最近一次已录入得分」',
       '若 missingSubjects 非空，说明存在从未录入的计入总分科目，对比结果偏低',
     ],
   };

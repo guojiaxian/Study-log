@@ -43,3 +43,17 @@ export function updateExamType(id, patch = {}) {
   audit('examType.update', `examType:${id}`);
   return id;
 }
+
+/** 删除考试类型；已被成绩引用的类型不允许删除（避免历史成绩类型无法回显） */
+export function deleteExamType(id) {
+  const db = getDb();
+  const cur = db.prepare('SELECT * FROM exam_type_dict WHERE id = ?').get(id);
+  if (!cur) throw Err.notFound('考试类型不存在');
+  const used = db.prepare('SELECT COUNT(*) AS n FROM exam WHERE exam_type = ?').get(cur.code).n;
+  if (used > 0) {
+    throw Err.conflict(`类型「${cur.name}」已被 ${used} 场考试使用，不能删除；如不再使用可在名称前加「（停用）」标记`);
+  }
+  db.prepare('DELETE FROM exam_type_dict WHERE id = ?').run(id);
+  audit('examType.delete', `examType:${id}`);
+  return id;
+}

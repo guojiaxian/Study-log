@@ -36,7 +36,8 @@ export async function createReport(scope = {}) {
   if (scopeType === 'exam') {
     const e = getExam(scope.examId);
     examId = e.examId;
-    scopeRef = { examId: e.examId, from: e.examDate, to: e.examDate };
+    // 单次分析锁定该次考试所属学段，避免跨学段口径混算
+    scopeRef = { examId: e.examId, from: e.examDate, to: e.examDate, grade: e.grade };
   }
 
   const summary = buildSummary({ scopeType, scopeRef });

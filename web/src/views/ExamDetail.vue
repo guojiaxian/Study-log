@@ -45,13 +45,24 @@ async function remove() {
   busy.value = true;
   try { await api.deleteExam(id); router.push('/exams'); } catch (e) { error.value = e.message; busy.value = false; }
 }
+
+/** 返回上一页；无历史（直接打开/刷新）时退回考试总览 */
+function goBack() {
+  if (window.history.length > 1) router.back();
+  else router.push('/exams');
+}
 </script>
 
 <template>
   <div>
     <div class="card-title">
       <h1>考试详情</h1>
-      <RouterLink to="/exams" class="btn btn-sm">← 考试总览</RouterLink>
+      <div class="row" style="gap: 8px">
+        <RouterLink :to="`/entry/manual?examId=${id}`" class="btn btn-primary btn-sm">编辑</RouterLink>
+        <button class="btn btn-sm" :disabled="busy" @click="generate">生成学情分析</button>
+        <button class="btn btn-sm btn-danger" :disabled="busy" @click="remove">删除</button>
+        <a href="javascript:void(0)" class="btn btn-sm" @click="goBack">← 返回</a>
+      </div>
     </div>
 
     <div v-if="loading" class="loading">加载中…</div>
@@ -59,14 +70,15 @@ async function remove() {
 
     <template v-else-if="exam">
       <div class="card">
-        <h2>{{ exam.name }} <span class="tag">{{ examTypeName(exam.examType) }}</span></h2>
+        <h2>{{ exam.name }} <span class="tag">{{ exam.gradeLabel }}</span> <span class="tag">{{ examTypeName(exam.examType) }}</span></h2>
         <div class="row" style="gap: 24px">
           <div class="stat">
-            <span class="label">总分（本次口径满分 {{ fmt(exam.enteredFullScore, 0) }}）</span>
+            <span class="label">总分</span>
             <span class="value">{{ fmt(exam.totalScore) }}<small> / {{ fmt(exam.enteredFullScore, 0) }}</small></span>
             <span class="small" :class="trendClass(cmp?.vsPrevious?.totalDelta)">
               较上次 {{ trendArrow(cmp?.vsPrevious?.totalDelta) }} {{ signed(cmp?.vsPrevious?.totalDelta) }} 分
             </span>
+            
           </div>
           <div class="stat">
             <span class="label">班级排名</span>
@@ -127,7 +139,7 @@ async function remove() {
         <p class="scroll-hint">← 可左右滑动查看全部列 →</p>
         <div class="table-wrap">
           <table class="tbl">
-            <thead><tr><th class="l">科目</th><th>得分</th><th class="hide-sm">中考满分</th><th>单科班级排名</th><th>等级</th><th class="hide-sm">缺考</th></tr></thead>
+            <thead><tr><th class="l">科目</th><th>得分</th><th class="hide-sm">满分</th><th>单科班级排名</th><th>等级</th><th class="hide-sm">缺考</th></tr></thead>
             <tbody>
               <tr v-for="s in scoreRows" :key="s.subjectId">
                 <td class="l">{{ s.subjectName }}</td>
@@ -142,11 +154,6 @@ async function remove() {
         </div>
       </div>
 
-      <div class="row" style="justify-content: flex-end">
-        <RouterLink :to="`/entry/manual?examId=${exam.examId}`" class="btn">编辑本次成绩</RouterLink>
-        <button class="btn" :disabled="busy" @click="generate">生成学情分析</button>
-        <button class="btn btn-danger" :disabled="busy" @click="remove">删除本次考试</button>
-      </div>
     </template>
   </div>
 </template>

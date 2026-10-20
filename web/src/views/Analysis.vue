@@ -1,7 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import { api } from '../api/index.js';
-import { fmt } from '../utils/format.js';
 
 const loading = ref(true);
 const busy = ref(false);
@@ -11,10 +10,7 @@ const reports = ref([]);
 const report = ref(null);
 
 const form = reactive({
-  scopeType: 'range',
   examId: null,
-  from: new Date(Date.now() - 30 * 864e5).toISOString().slice(0, 10),
-  to: new Date().toISOString().slice(0, 10),
 });
 
 async function loadHistory() {
@@ -37,12 +33,10 @@ onMounted(async () => {
 
 async function generate() {
   error.value = '';
+  if (!form.examId) { error.value = '请先选择要分析的考试'; return; }
   busy.value = true;
   try {
-    const payload = form.scopeType === 'exam'
-      ? { scopeType: 'exam', examId: form.examId }
-      : { scopeType: 'range', scopeRef: { from: form.from, to: form.to } };
-    const res = await api.createReport(payload);
+    const res = await api.createReport({ scopeType: 'exam', examId: form.examId });
     await loadHistory();
     await open(res.reportId);
   } catch (e) { error.value = e.message; } finally { busy.value = false; }
@@ -73,26 +67,21 @@ function copyReport() {
     <h1>智能学情分析</h1>
 
     <div class="card">
-      <h2>分析范围</h2>
-      <div class="row">
-        <div class="field" style="flex: 0 0 auto">
-          <label>类型</label>
-          <select v-model="form.scopeType">
-            <option value="range">时间区间</option>
-            <option value="exam">单次考试</option>
-          </select>
-        </div>
-        <template v-if="form.scopeType === 'range'">
-          <div class="field"><label>起始</label><input v-model="form.from" type="date" /></div>
-          <div class="field"><label>结束</label><input v-model="form.to" type="date" /></div>
-        </template>
-        <div v-else class="field" style="flex: 1 1 240px">
-          <label>考试</label>
-          <select v-model="form.examId">
-            <option v-for="e in exams" :key="e.examId" :value="e.examId">{{ e.examDate }} {{ e.name }}</option>
-          </select>
-        </div>
-        <button class="btn btn-primary" :disabled="busy" @click="generate">{{ busy ? '生成中…' : '生成分析' }}</button>
+      <div class="card-title">
+        <h2>分析范围</h2>
+        <button class="btn btn-primary btn-sm" :disabled="busy || !form.examId" @click="generate">
+          {{ busy ? '生成中…' : '生成分析' }}
+        </button>
+      </div>
+      <p class="small muted" style="margin-top: -4px">点击选择要分析的考试（默认最近一次）。</p>
+      <div class="chips" style="margin-top: 6px; gap: 6px; flex-wrap: wrap">
+        <span
+          v-for="e in exams"
+          :key="e.examId"
+          class="chip"
+          :class="{ active: form.examId === e.examId }"
+          @click="form.examId = e.examId"
+        >{{ e.examDate.slice(5) }} {{ e.name }}</span>
       </div>
     </div>
 
@@ -100,7 +89,17 @@ function copyReport() {
     <div v-if="loading" class="loading">加载中…</div>
 
     <template v-else>
-      <div v-if="report" class="card">
+      <!-- 生成中：在报告区显示 AI 正在分析占位 -->
+      <div v-if="busy" class="card">
+        <h2>AI 正在分析</h2>
+        <p style="margin: 8px 0">
+          正在结合所选考试的成绩、排名与历史趋势生成<strong>学情分析报告</strong>，请稍候…<br />
+          <span class="small muted">通常需要几十秒，生成完成后会自动展示。</span>
+        </p>
+        <div class="loading" style="text-align: left">AI 分析中，请勿关闭页面…</div>
+      </div>
+
+      <div v-else-if="report" class="card">
         <div class="card-title">
           <h2>报告</h2>
           <span class="small muted">

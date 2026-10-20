@@ -12,7 +12,7 @@
     "start": "node --disable-warning=ExperimentalWarning server/src/server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch server/src/server.js",
     "migrate": "node --disable-warning=ExperimentalWarning server/src/db/migrate.js",
-    "seed:demo": "node --disable-warning=ExperimentalWarning server/scripts/seed-demo.js",
+    "seed:real": "node --disable-warning=ExperimentalWarning server/scripts/load-real-scores.js",
     "test": "npm --prefix server test"
   }
 }

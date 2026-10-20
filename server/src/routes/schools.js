@@ -9,7 +9,6 @@ export default async function schoolRoutes(app) {
     const q = req.query || {};
     return ok(svc.compareSchools({
       examId: q.examId ? Number(q.examId) : undefined,
-      lineMode: q.lineMode,
     }));
   });
 

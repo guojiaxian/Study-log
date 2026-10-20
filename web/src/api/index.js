@@ -29,13 +29,17 @@ export const api = {
   patchConfig: (p) => http.patch('/config', p),
 
   // 科目 / 类型
-  subjects: (includeInactive = false) => http.get('/subjects', { params: { includeInactive } }),
+  /** 科目字典按学段区分；grade 不传则返回两个学段的并集 */
+  subjects: (includeInactive = false, grade) => http.get('/subjects', { params: { includeInactive, grade } }),
+  grades: () => http.get('/grades'),
   createSubject: (p) => http.post('/subjects', p),
   updateSubject: (id, p) => http.patch(`/subjects/${id}`, p),
-  deleteSubject: (id) => http.delete(`/subjects/${id}`),
+  /** 删除需指定学段（仅删该学段的科目配置） */
+  deleteSubject: (id, grade) => http.delete(`/subjects/${id}`, { params: { grade } }),
   examTypes: (includeInactive = false) => http.get('/exam-types', { params: { includeInactive } }),
   createExamType: (p) => http.post('/exam-types', p),
   updateExamType: (id, p) => http.patch(`/exam-types/${id}`, p),
+  deleteExamType: (id) => http.delete(`/exam-types/${id}`),
 
   // 考试
   exams: (params) => http.get('/exams', { params }),
@@ -45,7 +49,7 @@ export const api = {
   deleteExam: (id) => http.delete(`/exams/${id}`),
 
   // 统计
-  overview: () => http.get('/stats/overview'),
+  overview: (params) => http.get('/stats/overview', { params }),
   trend: (params) => http.get('/stats/trend', { params }),
   rankTrend: (params) => http.get('/stats/rank-trend', { params }),
   compare: (examId, window) => http.get('/stats/compare', { params: { examId, window } }),

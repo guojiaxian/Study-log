@@ -1,6 +1,6 @@
 import { getDb, audit } from '../db/index.js';
 import { Err } from '../lib/errors.js';
-import { listSubjectsRaw, subjectMap } from './subjectService.js';
+import { listSubjectsRaw, gradeFullScore, GRADE_LABEL } from './subjectService.js';
 import { subjectAliasMap } from './configService.js';
 import { matchSubject } from '../lib/subjectMatch.js';
 import { createExam } from './examService.js';
@@ -125,12 +125,20 @@ export async function parseScore(payload = {}) {
   if (!rawText) throw Err.validation('rawText 为必填');
   if (rawText.length > 2000) throw Err.validation('rawText 长度超过 2000 字，请分批解析或改用手动录入');
 
+  // 学段决定科目集合：初二无化学/体育/实验，且历史满分不同（见迁移 004）
+  const latest = getDb().prepare("SELECT grade FROM exam WHERE status='confirmed' ORDER BY exam_date DESC, id DESC LIMIT 1").get();
+  const grade = [8, 9].includes(Number(payload.grade)) ? Number(payload.grade) : Number(latest?.grade ?? 9);
+  const subjects = listSubjectsRaw({ grade, includeInactive: false });
+  const expected = subjects.filter((s) => s.isActive)
+    .map((s) => `${s.name}(${s.scoreMode === 'grade' ? '等级制' : `${s.fullScore}分`})`).join('、');
+  const userPrompt = `【学段】${GRADE_LABEL[grade]}（该学段开设科目与满分：${expected}）\n【成绩文本】\n${rawText}`;
+
   const startedAt = Date.now();
   // 注意：推理型模型（如 deepseek-flash）会先消耗 reasoning tokens，
   // max_tokens 需留足余量，否则 JSON 会被截断。
   const { content, usage, model, finishReason } = await callChat(cfg, [
     { role: 'system', content: PARSE_SYSTEM },
-    { role: 'user', content: rawText },
+    { role: 'user', content: userPrompt },
   ], { temperature: 0, maxTokens: cfg.parseMaxTokens });
 
   if (!content) {
@@ -141,7 +149,6 @@ export async function parseScore(payload = {}) {
   const parsed = extractJson(content);
   if (!parsed) throw Err.aiParse('AI 返回内容无法解析为合法 JSON', { raw: content.slice(0, 500) });
 
-  const subjects = listSubjectsRaw();
   const alias = subjectAliasMap();
   const items = (parsed.items || []).map((it) => {
     const m = matchSubject(it.rawSubject, subjects, alias);
@@ -175,6 +182,9 @@ export async function parseScore(payload = {}) {
       name: parsed.exam?.name ?? payload.examName ?? null,
       examDate: parsed.exam?.examDate ?? payload.examDate ?? null,
       examType: parsed.exam?.examType ?? payload.examType ?? null,
+      grade,
+      gradeLabel: GRADE_LABEL[grade],
+      totalFullScore: gradeFullScore(grade),
     },
     items,
     ranks: parsed.ranks ?? null,
@@ -192,11 +202,12 @@ export function getParseTask(id) {
 export function commitParse(payload = {}) {
   const { taskId, exam = {}, scores = [] } = payload;
   if (!scores.length) throw Err.validation('scores 不能为空');
+  const g = Number(exam.grade);
   const result = createExam({
     name: exam.name,
     examType: exam.examType,
     examDate: exam.examDate,
-    grade: exam.grade ?? 9,
+    grade: [8, 9].includes(g) ? g : 9,
     term: exam.term ?? null,
     status: exam.status ?? 'confirmed',
     remark: exam.remark ?? null,
@@ -240,6 +251,8 @@ function toChineseSummary(summary = {}) {
   return {
     分析范围: {
       类型: s.scopeType === 'exam' ? '单次考试' : '时间区间',
+      学段: s.gradeLabel ?? null,
+      学段总分满分: s.fullScore ?? null,
       起止: s.range?.from || s.range?.to ? `${s.range?.from ?? '不限'} 至 ${s.range?.to ?? '不限'}` : '全部已录入考试',
       考试次数: s.examCount ?? 0,
       连续下滑判定门槛: s.declineThreshold ?? null,
@@ -279,10 +292,10 @@ function toChineseSummary(summary = {}) {
       ? {
           我的中考口径总分: target.basis?.myTotal ?? null,
           总分满分: target.basis?.totalFullScore ?? null,
-          录取线口径: target.lineMode === 'latest' ? '最近一年' : '近三年均值',
           从未录入的计入总分科目数: (target.basis?.missingSubjects ?? []).length,
           各校: (target.schools ?? []).map((x) => ({
             院校: x.name,
+            采用线方式: x.lineMode === 'custom' ? '自定义' : x.lineMode === 'latest' ? '最近一年' : '近三年均值',
             采用的录取线: x.lineScore,
             录取线年份: x.lineYears ?? null,
             差距_录取线减我的总分_正数表示仍需提分: x.gap,

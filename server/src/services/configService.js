@@ -15,6 +15,13 @@ function readAll() {
   return m;
 }
 
+/** 数据库中的值转整数；空串/非数字返回 null（允许留空） */
+function toIntOrNull(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
 export function getConfig() {
   const m = readAll();
   return {
@@ -26,7 +33,16 @@ export function getConfig() {
     export: {
       defaultFormat: m.get('export.defaultFormat') ?? 'xlsx',
     },
+    /** 排名人数：管理页统一填写，录入成绩时自动带入，允许为空 */
+    rank: {
+      classSize: toIntOrNull(m.get('rank.classSize')),
+      gradeSize: toIntOrNull(m.get('rank.gradeSize')),
+    },
   };
+}
+
+export function getRankSizes() {
+  return getConfig().rank;
 }
 
 export function getStatParams() {
@@ -56,6 +72,11 @@ export function patchConfig(patch = {}) {
   }
   if (patch.export) {
     if (patch.export.defaultFormat != null) put('export.defaultFormat', patch.export.defaultFormat);
+  }
+  // 人数允许显式清空（null/空串 → 存空串，读取时转 null）
+  if (patch.rank) {
+    if ('classSize' in patch.rank) put('rank.classSize', patch.rank.classSize ?? '');
+    if ('gradeSize' in patch.rank) put('rank.gradeSize', patch.rank.gradeSize ?? '');
   }
   return { updated };
 }

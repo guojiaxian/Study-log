@@ -115,7 +115,8 @@ h3 { font-size: 15px; }
 /* 移动端可省略的低优先级列（如满分、均值、缺考标记等） */
 .hide-sm { display: table-cell; }
 table.tbl { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
-table.tbl th, table.tbl td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: right; }
+/* 数值/状态列默认居中；文本列（首列与 .l）左对齐 */
+table.tbl th, table.tbl td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: center; }
 table.tbl th:first-child, table.tbl td:first-child,
 table.tbl th.l, table.tbl td.l { text-align: left; }
 table.tbl thead th { background: #fafbfe; color: var(--muted); font-weight: 600; position: sticky; top: 0; }
@@ -132,7 +133,7 @@ input, select, textarea {
   background: #fff; width: 100%;
 }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-weak); }
-input[type='number'] { text-align: right; }
+input[type='number'] { text-align: center; }
 input.invalid { border-color: var(--down); background: #fef2f2; }
 textarea { min-height: 120px; resize: vertical; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }

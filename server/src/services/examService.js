@@ -1,11 +1,15 @@
 import { getDb, transaction, audit } from '../db/index.js';
 import { Err } from '../lib/errors.js';
-import { subjectMap, asBool } from './subjectService.js';
+import { getRankSizes } from './configService.js';
+import { subjectMap, asBool, gradeFullScore, GRADE_LABEL } from './subjectService.js';
 import { assertExamType, listExamTypes } from './examTypeService.js';
 import { round2 } from '../lib/metrics.js';
 
-/** 总分满分固定为中考口径 730（对应产品手册 2.2 / 开发手册 8.4 口径纪律 #1） */
-export const TOTAL_FULL_SCORE = 730;
+/**
+ * 各学段总分满分（初二 570 / 初三 730），由该学段科目字典推导，
+ * 不再是全局常量——两学段科目与满分本就不同（见迁移 004）。
+ */
+export { gradeFullScore, GRADE_LABEL };
 
 const EXAM_COLS = `e.id AS examId, e.name, e.exam_type AS examType, e.exam_date AS examDate,
   e.grade, e.term, e.status, e.source, e.remark,
@@ -31,7 +35,8 @@ function shapeExam(row, typeMap = typeNameMap()) {
     ...row,
     examTypeName: typeMap.get(row.examType) ?? row.examType,
     totalScore: round2(row.totalScore ?? 0),
-    totalFullScore: TOTAL_FULL_SCORE,
+    gradeLabel: GRADE_LABEL[row.grade] ?? null,
+    totalFullScore: gradeFullScore(row.grade),
     enteredFullScore: round2(row.enteredFullScore ?? 0),
     enteredSubjectCount: Number(row.enteredSubjectCount ?? 0),
   };
@@ -39,9 +44,14 @@ function shapeExam(row, typeMap = typeNameMap()) {
 
 function assertRank(name, rank, size) {
   if (rank == null) return;
-  if (size == null) throw Err.constraint(`${name}排名已填写，请同时填写对应人数`);
+  if (size == null) throw Err.constraint(`${name}排名已填写，请先在「管理 → 排名人数设置」中填写${name}人数`);
   if (Number(rank) < 1) throw Err.constraint(`${name}排名必须 ≥ 1`);
   if (Number(rank) > Number(size)) throw Err.constraint(`${name}排名不能大于${name}人数`);
+}
+
+/** 人数来源：请求未显式提供时取「管理 → 排名人数设置」的全局配置（可为 null，即允许不填） */
+function sizeOrDefault(requested, configured) {
+  return requested != null ? requested : configured;
 }
 
 export function listExams(q = {}) {
@@ -80,11 +90,16 @@ export function getExamScores(examId) {
   return getDb()
     .prepare(`SELECT s.id, s.exam_id AS examId, s.subject_id AS subjectId,
               sub.code AS subjectCode, sub.name AS subjectName, sub.score_mode AS scoreMode,
-              sub.counts_to_total AS countsToTotal, sub.full_score AS fullScore,
+              e.grade AS grade,
+              COALESCE(sg.counts_to_total, sub.counts_to_total) AS countsToTotal,
+              COALESCE(sg.full_score, sub.full_score) AS fullScore,
               s.score, s.grade_level AS gradeLevel, s.is_absent AS isAbsent,
               s.class_rank AS classRank, s.grade_rank AS gradeRank, s.remark
-              FROM exam_score s JOIN subject sub ON sub.id = s.subject_id
-              WHERE s.exam_id = ? ORDER BY sub.sort_order, sub.id`)
+              FROM exam_score s
+              JOIN exam e ON e.id = s.exam_id
+              JOIN subject sub ON sub.id = s.subject_id
+              LEFT JOIN subject_grade sg ON sg.subject_id = s.subject_id AND sg.grade = e.grade
+              WHERE s.exam_id = ? ORDER BY COALESCE(sg.sort_order, sub.sort_order), sub.id`)
     .all(examId)
     .map((r) => ({ ...r, isAbsent: asBool(r.isAbsent), countsToTotal: asBool(r.countsToTotal) }));
 }
@@ -97,7 +112,7 @@ export function getExam(id) {
 
 /** 校验单条成绩写入 */
 function validateScoreItem(item, sub) {
-  if (!sub) throw Err.validation(`科目 ${item.subjectId} 不存在`);
+  if (!sub) throw Err.validation(`科目 ${item.subjectId} 不存在或未在该学段开课`);
   if (!sub.isActive) throw Err.validation(`科目「${sub.name}」已停用，不能录入`);
   const isAbsent = item.isAbsent ? 1 : 0;
   if (isAbsent) return { score: null, gradeLevel: null, isAbsent: 1, classRank: null, gradeRank: null, remark: item.remark ?? null };
@@ -120,7 +135,9 @@ function validateScoreItem(item, sub) {
 
 /** 整体替换某次考试的成绩（事务内先删后写） */
 function writeScores(db, examId, scores) {
-  const subs = subjectMap();
+  // 满分/是否计入总分按「本次考试的学段」取，故先取 grade
+  const examRow = db.prepare('SELECT grade FROM exam WHERE id = ?').get(examId);
+  const subs = subjectMap(examRow?.grade);
   const seen = new Set();
   const prepared = [];
   for (const item of scores || []) {
@@ -151,14 +168,22 @@ function assertExamMeta(payload, { partial = false } = {}) {
   if (p.status != null && !['draft', 'confirmed'].includes(p.status)) {
     throw Err.validation('status 只能为 draft 或 confirmed');
   }
-  if (p.grade != null && ![7, 8, 9].includes(Number(p.grade))) throw Err.validation('grade 只能为 7/8/9');
+  if (!partial || p.grade != null) {
+    const g = Number(p.grade ?? 9);
+    if (![8, 9].includes(g)) throw Err.validation('grade 只能为 8（初二）或 9（初三）');
+  }
   assertRank('班级', p.classRank, p.classSize);
   assertRank('年级', p.gradeRank, p.gradeSize);
 }
 
 export function createExam(payload = {}) {
-  assertExamMeta(payload);
-  const p = payload;
+  const sizes = getRankSizes();
+  const p = {
+    ...payload,
+    classSize: sizeOrDefault(payload.classSize, sizes.classSize),
+    gradeSize: sizeOrDefault(payload.gradeSize, sizes.gradeSize),
+  };
+  assertExamMeta(p);
   return transaction((db) => {
     const info = db.prepare(`INSERT INTO exam
       (name, exam_type, exam_date, grade, term, status, source, remark, class_rank, class_size, grade_rank, grade_size)
@@ -176,6 +201,8 @@ export function createExam(payload = {}) {
 export function updateExam(id, patch = {}) {
   const cur = getDb().prepare('SELECT * FROM exam WHERE id = ?').get(id);
   if (!cur) throw Err.notFound('考试不存在');
+  // 人数统一以「管理 → 排名人数设置」为准：请求未显式提供时取全局配置
+  const sizes = getRankSizes();
   const merged = {
     name: patch.name ?? cur.name,
     examType: patch.examType ?? cur.exam_type,
@@ -185,9 +212,9 @@ export function updateExam(id, patch = {}) {
     status: patch.status ?? cur.status,
     remark: patch.remark ?? cur.remark,
     classRank: patch.classRank !== undefined ? patch.classRank : cur.class_rank,
-    classSize: patch.classSize !== undefined ? patch.classSize : cur.class_size,
+    classSize: patch.classSize !== undefined ? patch.classSize : cur.class_size ?? sizes.classSize,
     gradeRank: patch.gradeRank !== undefined ? patch.gradeRank : cur.grade_rank,
-    gradeSize: patch.gradeSize !== undefined ? patch.gradeSize : cur.grade_size,
+    gradeSize: patch.gradeSize !== undefined ? patch.gradeSize : cur.grade_size ?? sizes.gradeSize,
   };
   assertExamMeta(merged);
 
@@ -227,9 +254,10 @@ export function replaceScores(examId, scores = []) {
 
 export function patchScore(examId, subjectId, patch = {}) {
   const db = getDb();
-  const exam = db.prepare('SELECT id FROM exam WHERE id = ?').get(examId);
+  const exam = db.prepare('SELECT id, grade FROM exam WHERE id = ?').get(examId);
   if (!exam) throw Err.notFound('考试不存在');
-  const subs = subjectMap();
+  // 满分按「本次考试的学段」取，避免历史（初二 70 / 初三 50）按错误口径校验
+  const subs = subjectMap(exam.grade);
   const sub = subs.get(Number(subjectId));
   const v = validateScoreItem({ ...patch, subjectId: Number(subjectId) }, sub);
 
@@ -255,13 +283,15 @@ export function deleteScore(examId, subjectId) {
 }
 
 /** 统计用：按范围取已确认考试（升序） */
-export function findExamsForStats({ from, to, types, includeDraft = false } = {}) {
+export function findExamsForStats({ from, to, types, grade, includeDraft = false } = {}) {
   const db = getDb();
   const where = [];
   const params = [];
   if (!includeDraft) where.push("e.status = 'confirmed'");
   if (from) { where.push('e.exam_date >= ?'); params.push(from); }
   if (to) { where.push('e.exam_date <= ?'); params.push(to); }
+  // 学段过滤：不传/传 all 表示不限制（两学段混看）
+  if (grade != null && grade !== '' && grade !== 'all') { where.push('e.grade = ?'); params.push(Number(grade)); }
   if (types && types.length) {
     where.push(`e.exam_type IN (${types.map(() => '?').join(',')})`);
     params.push(...types);

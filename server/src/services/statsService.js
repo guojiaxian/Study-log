@@ -1,17 +1,74 @@
 import { getDb } from '../db/index.js';
-import { listSubjectsRaw, asBool } from './subjectService.js';
-import { findExamsForStats, getExam, TOTAL_FULL_SCORE } from './examService.js';
+import { listSubjectsRaw, asBool, gradeFullScore, GRADE_LABEL, GRADES } from './subjectService.js';
+import { findExamsForStats, getExam } from './examService.js';
 import { getStatParams } from './configService.js';
 import { mean, stddev, declineRun, totalOfScores, rankDelta, round2 } from '../lib/metrics.js';
 import { compareSchools } from './schoolService.js';
 
-/** 科目元数据 */
-function subjectMeta() {
-  const list = listSubjectsRaw();
-  return { list, byId: new Map(list.map((s) => [s.id, s])) };
+/**
+ * 学段口径（见迁移 004）：
+ *   8          初二，总分满分 570
+ *   9          初三，总分满分 730（中考口径）
+ *   'comparable' 跨学段可比 —— 仅保留两学段满分相同的科目（语数英物理道法），总分不参与
+ *   'all'      全部学段 —— 两学段的考试画在同一张图中（满分口径不同，仅供总览参考）
+ *   undefined  跟随最近一次已确认考试所属学段
+ */
+export function resolveGrade(raw) {
+  if (raw === 'comparable' || raw === 'all') return raw;
+  const n = Number(raw);
+  if (n === 8 || n === 9) return n;
+  const row = getDb().prepare("SELECT grade FROM exam WHERE status='confirmed' ORDER BY exam_date DESC, id DESC LIMIT 1").get();
+  return Number(row?.grade ?? 9);
 }
 
-/** examId -> Map(subjectId -> scoreRow) */
+function normalizeGrade(raw) {
+  const n = Number(raw);
+  return n === 8 || n === 9 ? n : null;
+}
+
+/** 学段 -> (subjectId -> 科目行)：算总分时用对应学段的计分科目 */
+function subjectIndexByGrade() {
+  const m = new Map();
+  for (const g of GRADES) m.set(g, new Map(listSubjectsRaw({ grade: g }).map((s) => [s.id, s])));
+  return m;
+}
+
+/** 可选科目（单科趋势的 chips）：等级制科目不计入可选（无分数不可绘图） */
+export function selectableSubjects(scope) {
+  const scoreOnly = (s) => s.scoreMode === 'score';
+  if (scope === 'comparable') {
+    const byCode = new Map();
+    for (const s of listSubjectsRaw({})) {
+      if (!byCode.has(s.code)) byCode.set(s.code, []);
+      byCode.get(s.code).push(s);
+    }
+    return [...byCode.values()]
+      .filter((rows) => rows.length === GRADES.length && rows.every((r) => r.isActive)
+        && rows.every((r) => r.fullScore === rows[0].fullScore) && scoreOnly(rows[0]))
+      .map((rows) => ({ code: rows[0].code, name: rows[0].name, fullScore: rows[0].fullScore, grades: [...GRADES], scoreMode: rows[0].scoreMode }));
+  }
+  if (scope === 'all') {
+    // 全部学段：两学段可选科目按 code 去重合并；满分不一致的科目 fullScore 置 null（参考线不可用）
+    const byCode = new Map();
+    for (const g of GRADES) {
+      for (const s of listSubjectsRaw({ grade: g })) {
+        if (!s.isActive || !scoreOnly(s)) continue;
+        const prev = byCode.get(s.code);
+        if (!prev) byCode.set(s.code, { code: s.code, name: s.name, fullScore: s.fullScore, grades: [g], scoreMode: s.scoreMode });
+        else {
+          if (!prev.grades.includes(g)) prev.grades.push(g);
+          if (prev.fullScore !== s.fullScore) prev.fullScore = null;
+        }
+      }
+    }
+    return [...byCode.values()];
+  }
+  const g = normalizeGrade(scope) ?? resolveGrade(scope);
+  return listSubjectsRaw({ grade: g })
+    .filter((s) => s.isActive && scoreOnly(s))
+    .map((s) => ({ code: s.code, name: s.name, fullScore: s.fullScore, grades: [s.grade], scoreMode: s.scoreMode }));
+}
+
 function loadScores(examIds) {
   const m = new Map();
   if (!examIds.length) return m;
@@ -34,7 +91,6 @@ function totalOfExam(scoreMap, byId) {
   return totalOfScores(arr, byId);
 }
 
-/** 取某科目在若干次考试中的得分序列（按考试升序） */
 function seriesOf(exams, scores, subjectId) {
   return exams.map((e) => {
     const r = scores.get(e.examId)?.get(subjectId);
@@ -48,46 +104,83 @@ function seriesOf(exams, scores, subjectId) {
 /* ------------------------------------------------------------------ */
 
 export function trend(q = {}) {
-  const exams = findExamsForStats({ from: q.from, to: q.to, types: q.types, includeDraft: false });
-  const { list, byId } = subjectMeta();
+  const scope = q.grade == null
+    ? resolveGrade(undefined)
+    : (q.grade === 'comparable' || q.grade === 'all' ? q.grade : resolveGrade(q.grade));
+  const single = normalizeGrade(scope);
+  const exams = findExamsForStats({
+    from: q.from, to: q.to, types: q.types,
+    grade: single,          // 'comparable' / 'all' 时两学段都取
+    includeDraft: false,
+  });
+  const idxByGrade = subjectIndexByGrade();
   const scores = loadScores(exams.map((e) => e.examId));
 
+  // 可选科目池 + 每科在各学段的行（用于决定某次考试是否有该科）
+  const rowsByCode = new Map();
+  for (const s of listSubjectsRaw({})) {
+    if (!rowsByCode.has(s.code)) rowsByCode.set(s.code, new Map());
+    rowsByCode.get(s.code).set(s.grade, s);
+  }
+
   const selected = q.subjectCodes?.length
-    ? q.subjectCodes.map((c) => list.find((s) => s.code === c)).filter(Boolean)
+    ? q.subjectCodes.map((c) => selectableSubjects(scope).find((s) => s.code === c)).filter(Boolean)
     : [];
 
   const points = exams.map((e) => {
     const sm = scores.get(e.examId) ?? new Map();
-    const t = totalOfExam(sm, byId);
+    const t = totalOfExam(sm, idxByGrade.get(e.grade) ?? new Map());
     const values = { total: t.entered > 0 ? t.total : null };
     for (const s of selected) {
-      const r = sm.get(s.id);
+      const row = rowsByCode.get(s.code)?.get(e.grade);
+      if (!row) { values[s.code] = null; continue; }
+      const r = sm.get(row.id);
       values[s.code] = !r || r.isAbsent || r.score == null ? null : r.score;
     }
-    return { examId: e.examId, examDate: e.examDate, examName: e.name, values };
+    return {
+      examId: e.examId, examDate: e.examDate, examName: e.name,
+      grade: e.grade, gradeLabel: GRADE_LABEL[e.grade] ?? null,
+      enteredFullScore: e.enteredFullScore ?? null,
+      values,
+    };
   });
 
-  // 该口径满分 = 实际出现在所展示考试中、计入总分科目的满分之和（如仅 7 门文化课 = 600）
-  const presentIds = new Set();
-  for (const sm of scores.values()) {
-    for (const [subjectId, r] of sm) {
-      const sub = byId.get(subjectId);
-      if (sub && sub.countsToTotal && !r.isAbsent && r.score != null) presentIds.add(subjectId);
-    }
+  const series = [];
+  if (single != null || scope === 'all') {
+    // 参考线取「所展示考试实际卷面计入满分」的最大值：
+    // 初三 10 月月考尚未考体育(100)/实验(30)，卷面满分 600 而非中考口径 730，
+    // 若直接画 730 参考线会造成"缺 157 分"的误读，故按实际卷面满分为准。
+    // 'all' 模式两学段满分口径不同，gradeFullScore 返回 null（无单一口径）。
+    const entered = exams.map((e) => Number(e.enteredFullScore ?? 0)).filter((v) => v > 0);
+    series.push({
+      key: 'total',
+      name: '总分',
+      unit: 'score',
+      fullScore: entered.length ? Math.max(...entered) : (single != null ? gradeFullScore(single) : 0),
+      gradeFullScore: single != null ? gradeFullScore(single) : null,
+    });
   }
-  const totalFullScore = [...presentIds].reduce((a, id) => a + (byId.get(id)?.fullScore ?? 0), 0);
-  const series = [
-    { key: 'total', name: '总分', unit: 'score', fullScore: totalFullScore },
-    ...selected.map((s) => ({ key: s.code, name: s.name, unit: 'score', fullScore: s.fullScore })),
-  ];
+  for (const s of selected) {
+    series.push({ key: s.code, name: s.name, unit: 'score', fullScore: s.fullScore, grades: s.grades });
+  }
 
   return {
+    grade: scope,
+    gradeLabel: scope === 'comparable' ? '跨学段可比' : scope === 'all' ? '全部' : (GRADE_LABEL[single] ?? null),
     points,
     series,
-    notes: [
-      'values 中某科为 null 表示该次考试该科缺考或未录入，前端须渲染为断点，不得按 0 处理',
-      'total 为本次已录入且计入总分科目得分之和，跨考试比较请对齐覆盖科目',
-    ],
+    subjects: selectableSubjects(scope),
+    notes: scope === 'comparable'
+      ? ['跨学段可比模式仅提供两学段满分相同的科目；总分口径不同，故不提供总分折线']
+      : scope === 'all'
+        ? [
+          '全部学段模式把初二与初三的考试画在同一张图中；两学段计入总分满分不同（初二 570 / 初三 730），比较绝对分数时请注意口径',
+          '总分折线参考线取各次考试已录入科目的卷面满分最大值',
+        ]
+        : [
+          `总分折线参考线取本次已录入科目的卷面满分；${GRADE_LABEL[single] ?? ''}中考口径满分为 ${gradeFullScore(single)} 分（尚未开考的科目不计入卷面满分）`,
+          'values 中某科为 null 表示该次考试未开课、缺考或未录入，前端须渲染为断点，不得按 0 处理',
+        ],
   };
 }
 
@@ -96,23 +189,28 @@ export function trend(q = {}) {
 /* ------------------------------------------------------------------ */
 
 export function rankTrend(q = {}) {
-  const exams = findExamsForStats({ from: q.from, to: q.to, types: q.types, includeDraft: false });
+  const scope = q.grade == null ? resolveGrade(undefined) : resolveGrade(q.grade);
+  const single = normalizeGrade(scope);
+  const exams = findExamsForStats({ from: q.from, to: q.to, types: q.types, grade: single, includeDraft: false });
   const points = exams.map((e) => ({
     examId: e.examId,
     examDate: e.examDate,
     examName: e.name,
+    grade: e.grade,
     classRank: e.classRank ?? null,
     classSize: e.classSize ?? null,
     gradeRank: e.gradeRank ?? null,
     gradeSize: e.gradeSize ?? null,
   }));
   return {
+    grade: scope,
+    gradeLabel: scope === 'all' ? '全部' : (GRADE_LABEL[single] ?? null),
     points,
     series: [
       { key: 'classRank', name: '班级排名', reverseAxis: true, sizeKey: 'classSize' },
       { key: 'gradeRank', name: '年级排名', reverseAxis: true, sizeKey: 'gradeSize' },
     ],
-    notes: ['reverseAxis=true 表示名次越小越好，前端必须将 Y 轴反向渲染'],
+    notes: ['reverseAxis=true 表示名次越小越好，前端必须将 Y 轴反向渲染', '班级/年级排名只在同一学段内可比，不跨学段混合'],
   };
 }
 
@@ -127,11 +225,11 @@ export function compare(examId, opts = {}) {
 
   const scoredSubjects = exam.scores.filter((s) => s.countsToTotal && s.scoreMode === 'score');
 
-  // 与趋势一致的考试口径：默认排除单项测试（sport/lab），避免"上次"取到只考 1 科的测试
-  let scope = findExamsForStats({});
+  // 与趋势一致的考试口径：同属一个学段、默认排除单项测试（sport/lab）
+  let scope = findExamsForStats({ grade: exam.grade });
   let idx = scope.findIndex((e) => e.examId === examId);
   if (idx === -1) {
-    scope = findExamsForStats({ types: [exam.examType] });
+    scope = findExamsForStats({ grade: exam.grade, types: [exam.examType] });
     idx = scope.findIndex((e) => e.examId === examId);
   }
 
@@ -166,7 +264,6 @@ export function compare(examId, opts = {}) {
     }),
   };
 
-  // 均值窗口：最近 window 次（含本次）
   const recentExams = scope.slice(Math.max(0, idx - window + 1), idx + 1);
   const windowScores = loadScores(recentExams.map((e) => e.examId));
 
@@ -188,7 +285,6 @@ export function compare(examId, opts = {}) {
     }),
   };
 
-  // 连续下滑：以本次为终点的完整序列
   const historyExams = scope.slice(0, idx + 1);
   const historyScores = loadScores(historyExams.map((e) => e.examId));
   const declining = [];
@@ -203,7 +299,8 @@ export function compare(examId, opts = {}) {
   return {
     exam: {
       examId: exam.examId, name: exam.name, examDate: exam.examDate,
-      totalScore: exam.totalScore, totalFullScore: TOTAL_FULL_SCORE,
+      grade: exam.grade, gradeLabel: exam.gradeLabel,
+      totalScore: exam.totalScore, totalFullScore: exam.totalFullScore,
       enteredFullScore: exam.enteredFullScore,
       classRank: exam.classRank, classSize: exam.classSize,
       gradeRank: exam.gradeRank, gradeSize: exam.gradeSize,
@@ -219,15 +316,32 @@ export function compare(examId, opts = {}) {
 /* ------------------------------------------------------------------ */
 
 export function matrix(q = {}) {
-  const exams = findExamsForStats({ from: q.from, to: q.to, types: q.types, includeDraft: false });
-  const { list } = subjectMeta();
-  const activeIds = new Set(list.filter((s) => s.isActive).map((s) => s.id));
+  const grade = normalizeGrade(q.grade);
+  const exams = findExamsForStats({ from: q.from, to: q.to, types: q.types, grade, includeDraft: false });
+  const idxByGrade = subjectIndexByGrade();
+
+  // 列：同一科目（code）只显示一列，初二/初三共用；单元格取各次考试自己学段的科目行
+  const list = grade ? listSubjectsRaw({ grade }) : listSubjectsRaw({});
   const scores = loadScores(exams.map((e) => e.examId));
   const usedIds = new Set();
   for (const sm of scores.values()) for (const id of sm.keys()) usedIds.add(id);
-  const columns = list
-    .filter((s) => activeIds.has(s.id) || usedIds.has(s.id))
-    .map((s) => ({ subjectId: s.id, code: s.code, name: s.name, scoreMode: s.scoreMode, fullScore: s.fullScore }));
+
+  const colMap = new Map();
+  for (const s of list) {
+    if (!s.isActive && !usedIds.has(s.id)) continue;
+    const prev = colMap.get(s.code);
+    if (!prev) {
+      colMap.set(s.code, {
+        subjectId: s.id, code: s.code, name: s.name, scoreMode: s.scoreMode,
+        grades: [s.grade], fullScore: s.fullScore, sortOrder: s.sortOrder,
+      });
+    } else {
+      if (!prev.grades.includes(s.grade)) prev.grades.push(s.grade);
+      // 两学段满分不同（如历史 70/50）时列级满分不可用，置 null（单元格仍带各自学段的满分）
+      if (prev.fullScore !== s.fullScore) prev.fullScore = null;
+    }
+  }
+  const columns = [...colMap.values()].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
 
   const ordered = [...exams].reverse();
   const page = Math.max(1, Number(q.page) || 1);
@@ -236,42 +350,59 @@ export function matrix(q = {}) {
 
   const rows = slice.map((e) => {
     const sm = scores.get(e.examId) ?? new Map();
+    const gradeMap = idxByGrade.get(e.grade) ?? new Map();
+    // 该学段下科目 id -> 列下标（同一科目两学段 subjectId 相同，不会串列：
+    // 每次考试只会有自己学段的科目成绩行）
+    const colBySubjectId = new Map();
+    columns.forEach((c, i) => { if (c.grades.includes(e.grade)) colBySubjectId.set(c.subjectId, i); });
+    const cells = columns.map((c) => ({ subjectId: c.subjectId, score: null, gradeLevel: null, classRank: null, isAbsent: false, entered: false, fullScore: c.fullScore }));
+    for (const [subjectId, r] of sm) {
+      const i = colBySubjectId.get(subjectId);
+      if (i == null) continue;
+      cells[i] = {
+        subjectId, score: r.score, gradeLevel: r.gradeLevel, classRank: r.classRank,
+        isAbsent: r.isAbsent, entered: true, fullScore: gradeMap.get(subjectId)?.fullScore ?? columns[i].fullScore,
+      };
+    }
     return {
       examId: e.examId, examDate: e.examDate, name: e.name, examType: e.examType,
-      totalScore: e.totalScore,
+      grade: e.grade, gradeLabel: GRADE_LABEL[e.grade] ?? null,
+      totalScore: e.totalScore, totalFullScore: e.totalFullScore, enteredFullScore: e.enteredFullScore,
       classRank: e.classRank, classSize: e.classSize,
       gradeRank: e.gradeRank, gradeSize: e.gradeSize,
-      cells: columns.map((c) => {
-        const r = sm.get(c.subjectId);
-        if (!r) return { subjectId: c.subjectId, score: null, gradeLevel: null, classRank: null, isAbsent: false, entered: false };
-        return {
-          subjectId: c.subjectId, score: r.score, gradeLevel: r.gradeLevel,
-          classRank: r.classRank, isAbsent: r.isAbsent, entered: true,
-        };
-      }),
+      cells,
     };
   });
 
-  return { columns, rows, total: ordered.length, page, pageSize };
+  return { grade, gradeLabel: GRADE_LABEL[grade] ?? null, columns, rows, total: ordered.length, page, pageSize };
 }
 
 /* ------------------------------------------------------------------ */
 /* 首页仪表盘                                                         */
 /* ------------------------------------------------------------------ */
 
-export function overview() {
+export function overview(q = {}) {
   const db = getDb();
+  const grade = normalizeGrade(q.grade);
+  const where = ["status='confirmed'"];
+  const params = [];
+  if (grade) { where.push('grade = ?'); params.push(grade); }
   const latestRow = db
-    .prepare(`SELECT id FROM exam WHERE status='confirmed' ORDER BY exam_date DESC, id DESC LIMIT 1`)
-    .get();
+    .prepare(`SELECT id, grade FROM exam WHERE ${where.join(' AND ')} ORDER BY exam_date DESC, id DESC LIMIT 1`)
+    .get(...params);
 
   if (!latestRow) {
-    return { latestExam: null, subjectOverview: [], totalTrend: [], rankTrend: [], targetGap: null, latestReport: null };
+    return {
+      grade: grade ?? null, latestExam: null, subjectOverview: [],
+      totalTrend: [], totalFullScore: grade ? gradeFullScore(grade) : null,
+      rankTrend: [], targetGap: null, latestReport: null,
+    };
   }
 
   const exam = getExam(latestRow.id);
   const cmp = compare(latestRow.id);
-  const params = getStatParams();
+  const params2 = getStatParams();
+  const g = exam.grade;
 
   const subjectOverview = exam.scores
     .filter((s) => s.scoreMode === 'score')
@@ -280,6 +411,7 @@ export function overview() {
       const avg = cmp.vsAverage.subjects.find((x) => x.subjectId === s.subjectId);
       return {
         subjectId: s.subjectId, subjectName: s.subjectName, fullScore: s.fullScore,
+        countsToTotal: s.countsToTotal,
         latest: s.score, isAbsent: s.isAbsent,
         deltaVsPrev: prev?.scoreDelta ?? null,
         avgScore: avg?.avgScore ?? null,
@@ -288,8 +420,8 @@ export function overview() {
       };
     });
 
-  const trendData = trend({ subjectCodes: [] });
-  const target = safeCompareSchools({ lineMode: 'avg3y' });
+  // 首页趋势跟随学段筛选：未选学段（全部）时两学段同图，与趋势页「全部」口径一致
+  const trendData = trend({ grade: grade ?? 'all', subjectCodes: [] });
 
   let latestReport = null;
   const rep = db
@@ -298,9 +430,12 @@ export function overview() {
   if (rep) latestReport = { reportId: rep.id, createdAt: rep.createdAt, model: rep.model, isFallback: asBool(rep.isFallback) };
 
   return {
+    grade: g,
+    gradeLabel: exam.gradeLabel,
     latestExam: {
       examId: exam.examId, name: exam.name, examDate: exam.examDate, examType: exam.examType,
-      totalScore: exam.totalScore, totalFullScore: TOTAL_FULL_SCORE,
+      grade: g, gradeLabel: exam.gradeLabel,
+      totalScore: exam.totalScore, totalFullScore: exam.totalFullScore,
       enteredFullScore: exam.enteredFullScore,
       deltaVsPrev: cmp.vsPrevious.totalDelta,
       classRank: exam.classRank, classSize: exam.classSize,
@@ -308,10 +443,13 @@ export function overview() {
     },
     subjectOverview,
     totalTrend: trendData.points.slice(-8),
-    totalFullScoreCulture: trendData.series[0]?.fullScore ?? 600,
-    rankTrend: rankTrend({}).points.slice(-8),
-    targetGap: target,
-    declineThreshold: params.declineThreshold,
+    // 学段（中考）口径满分：初二 570 / 初三 730
+    totalFullScore: gradeFullScore(g),
+    rankTrend: rankTrend({ grade: g }).points.slice(-8),
+    // 目标院校为中考（初三 730）口径；初二阶段不提供对比，避免差距虚高
+    targetGap: g === 9 ? safeCompareSchools() : null,
+    targetAvailable: g === 9,
+    declineThreshold: params2.declineThreshold,
     latestReport,
   };
 }
@@ -327,15 +465,21 @@ function safeCompareSchools(opts) {
 export function buildSummary(scope = {}) {
   const params = getStatParams();
   const scopeType = scope.scopeType ?? 'range';
-  const { from, to } = scope.scopeRef ?? {};
+  const { from, to, grade: rawGrade } = scope.scopeRef ?? {};
   const exams = findExamsForStats({ from, to, includeDraft: false });
-  const { list, byId } = subjectMeta();
-  const scores = loadScores(exams.map((e) => e.examId));
 
+  // 学段：优先取显式传入，否则取范围内最近一次考试的学段
+  const grade = normalizeGrade(rawGrade)
+    ?? (exams.length ? Number(exams[exams.length - 1].grade) : resolveGrade(undefined));
+
+  const scoped = exams.filter((e) => Number(e.grade) === grade);
+  const idxByGrade = subjectIndexByGrade();
+  const scores = loadScores(scoped.map((e) => e.examId));
+  const list = listSubjectsRaw({ grade });
   const scoreSubjects = list.filter((s) => s.countsToTotal && s.scoreMode === 'score');
 
   const subjects = scoreSubjects.map((s) => {
-    const series = seriesOf(exams, scores, s.id);
+    const series = seriesOf(scoped, scores, s.id);
     const filled = series.filter((v) => v != null);
     const latest = filled.length ? filled[filled.length - 1] : null;
     const prev = filled.length > 1 ? filled[filled.length - 2] : null;
@@ -353,12 +497,12 @@ export function buildSummary(scope = {}) {
     };
   });
 
-  const totalSeries = exams.map((e) => {
-    const t = totalOfExam(scores.get(e.examId) ?? new Map(), byId);
+  const totalSeries = scoped.map((e) => {
+    const t = totalOfExam(scores.get(e.examId) ?? new Map(), idxByGrade.get(e.grade) ?? new Map());
     return t.entered > 0 ? t.total : null;
   });
 
-  const rankPairs = exams
+  const rankPairs = scoped
     .filter((e) => e.classRank != null || e.gradeRank != null)
     .map((e) => ({ classRank: e.classRank, gradeRank: e.gradeRank }));
   const rankTrendObj = {
@@ -373,16 +517,21 @@ export function buildSummary(scope = {}) {
   return {
     scopeType,
     range: { from: from ?? null, to: to ?? null },
-    examCount: exams.length,
+    grade,
+    gradeLabel: GRADE_LABEL[grade] ?? null,
+    fullScore: gradeFullScore(grade),
+    examCount: scoped.length,
     declineThreshold: params.declineThreshold,
-    exams: exams.map((e) => ({
+    exams: scoped.map((e) => ({
       examId: e.examId, name: e.name, examDate: e.examDate, examType: e.examType,
+      grade: e.grade,
       total: e.totalScore, classRank: e.classRank, classSize: e.classSize,
       gradeRank: e.gradeRank, gradeSize: e.gradeSize,
     })),
     totalSeries,
     subjects,
     rankTrend: rankTrendObj,
-    target: safeCompareSchools({ lineMode: 'avg3y' }),
+    // 目标院校录取线为初三中考口径，仅学段为初三时才提供
+    target: grade === 9 ? safeCompareSchools() : null,
   };
 }

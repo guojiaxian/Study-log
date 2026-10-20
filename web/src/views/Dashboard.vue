@@ -2,17 +2,26 @@
 import { computed, onMounted, ref } from 'vue';
 import { api } from '../api/index.js';
 import LineChart from '../components/LineChart.vue';
+import GradeChips from '../components/GradeChips.vue';
 import { fmt, signed, trendArrow, trendClass, VERDICT } from '../utils/format.js';
 
 const loading = ref(true);
 const data = ref(null);
 const error = ref('');
+/** 学段：8 初二 / 9 初三；空串（全部）= 跟随最近一次考试 */
+const grade = ref('');
 
-const load = async () => {
-  loading.value = true;
+const GRADE_OPTIONS = [
+  { value: '8', label: '初二' },
+  { value: '9', label: '初三' },
+  { value: '', label: '全部' },
+];
+
+const load = async (opts = {}) => {
+  if (!opts.silent) loading.value = true;
   error.value = '';
   try {
-    data.value = await api.overview();
+    data.value = await api.overview({ grade: grade.value || undefined });
   } catch (e) {
     error.value = e.message;
   } finally {
@@ -20,6 +29,8 @@ const load = async () => {
   }
 };
 onMounted(load);
+
+function onGradeChange(v) { grade.value = v; load({ silent: true }); }
 
 const latest = computed(() => data.value?.latestExam ?? null);
 
@@ -41,10 +52,12 @@ const subjectRows = computed(() =>
 <template>
   <div>
     <div class="card-title">
-      <h1>首页</h1>
-      <div class="row desktop-only" style="gap: 8px">
-        <RouterLink to="/manage" class="btn btn-primary btn-sm">录入成绩</RouterLink>
-        <RouterLink to="/settings" class="btn btn-sm">设置</RouterLink>
+      <h1>首页<span v-if="data?.gradeLabel" class="small muted" style="font-weight: normal"> · {{ data.gradeLabel }}</span></h1>
+      <div class="row" style="gap: 8px; align-items: center">
+        <GradeChips :model-value="grade" :options="GRADE_OPTIONS" @update:model-value="onGradeChange" />
+        <div class="row desktop-only" style="gap: 8px">
+          <RouterLink to="/manage" class="btn btn-primary btn-sm">录入成绩</RouterLink>
+        </div>
       </div>
     </div>
 
@@ -59,46 +72,49 @@ const subjectRows = computed(() =>
     </template>
 
     <template v-else>
-      <div class="grid grid-3">
-        <div class="card">
-          <div class="stat">
-            <span class="label">最近一次考试</span>
-            <span class="value" style="font-size: 16px">{{ latest.name }}</span>
-            <span class="small muted">{{ latest.examDate }}</span>
+      <!-- 桌面端：左 1/3 放两张信息卡，右 2/3 放总分趋势；移动端上下堆叠 -->
+      <div class="hero">
+        <div class="hero-left">
+          <div class="card">
+            <div class="stat">
+              <span class="label">最近一次考试</span>
+              <span class="value" style="font-size: 16px">{{ latest.name }}</span>
+              <span class="small muted">{{ latest.examDate }} · {{ latest.gradeLabel }}</span>
+            </div>
+            <div style="margin-top: 12px" class="stat">
+              <span class="label">总分（满分 {{ fmt(latest.enteredFullScore, 0) }}）</span>
+              <span class="value">
+                {{ fmt(latest.totalScore) }}<small> / {{ fmt(latest.enteredFullScore, 0) }}</small>
+              </span>
+            </div>
+            <div class="small" :class="trendClass(latest.deltaVsPrev)">
+              较上次 {{ trendArrow(latest.deltaVsPrev) }} {{ signed(latest.deltaVsPrev) }} 分
+            </div>
           </div>
-          <div style="margin-top: 12px" class="stat">
-            <span class="label">总分（本次口径满分 {{ fmt(latest.enteredFullScore, 0) }}）</span>
-            <span class="value">
-              {{ fmt(latest.totalScore) }}<small> / {{ fmt(latest.enteredFullScore, 0) }}</small>
-            </span>
-          </div>
-          <div class="small" :class="trendClass(latest.deltaVsPrev)">
-            较上次 {{ trendArrow(latest.deltaVsPrev) }} {{ signed(latest.deltaVsPrev) }} 分
+
+          <div class="card">
+            <div class="stat">
+              <span class="label">排名</span>
+              <span class="value" style="font-size: 18px">
+                班级 {{ latest.classRank ?? '—' }}<small>/{{ latest.classSize ?? '—' }}</small>
+              </span>
+              <span class="value" style="font-size: 18px">
+                年级 {{ latest.gradeRank ?? '—' }}<small>/{{ latest.gradeSize ?? '—' }}</small>
+              </span>
+            </div>
+            <RouterLink to="/trend" class="small" style="color: var(--primary)">查看排名趋势 →</RouterLink>
           </div>
         </div>
 
         <div class="card">
           <div class="stat">
-            <span class="label">排名</span>
-            <span class="value" style="font-size: 18px">
-              班级 {{ latest.classRank ?? '—' }}<small>/{{ latest.classSize ?? '—' }}</small>
-            </span>
-            <span class="value" style="font-size: 18px">
-              年级 {{ latest.gradeRank ?? '—' }}<small>/{{ latest.gradeSize ?? '—' }}</small>
-            </span>
-          </div>
-          <RouterLink to="/trend" class="small" style="color: var(--primary)">查看排名趋势 →</RouterLink>
-        </div>
-
-        <div class="card">
-          <div class="stat">
-            <span class="label">总分趋势（近 8 次）</span>
+            <span class="label">总分趋势（近 {{ (data?.totalTrend ?? []).length }} 次）</span>
           </div>
           <LineChart
             :categories="trendCategories"
             :series="trendSeries"
             :y-axes="[{ name: '' }]"
-            height="120px"
+            height="220px"
             empty-text="数据点不足"
           />
           <RouterLink to="/trend" class="small" style="color: var(--primary)">查看完整趋势 →</RouterLink>
@@ -107,22 +123,34 @@ const subjectRows = computed(() =>
 
       <div class="card">
         <div class="card-title">
-          <h2>目标院校差距（中考口径总分 {{ fmt(data.targetGap?.basis?.myTotal) }} / 730）</h2>
-          <RouterLink to="/targets" class="btn btn-sm">查看详情</RouterLink>
+          <h2>目标院校差距</h2>
+          <RouterLink v-if="data.targetAvailable" to="/targets" class="btn btn-sm">查看详情</RouterLink>
         </div>
-        <div v-if="!targets.length" class="muted small">未配置目标院校</div>
-        <div v-else class="grid grid-3">
-          <div v-for="t in targets" :key="t.schoolId" class="stat">
-            <span class="label">{{ t.name }}</span>
-            <span class="value" style="font-size: 18px">{{ fmt(t.lineScore) }}</span>
-            <span class="small" :class="t.gap > 0 ? 'down' : 'up'">
-              {{ t.gap > 0 ? `需提分 ${fmt(t.gap)} 分` : `已超线 ${fmt(-t.gap)} 分` }}
-            </span>
+        <template v-if="!data.targetAvailable">
+          <div class="notice notice-info small">
+            当前为<strong>初二</strong>学段，目标院校录取线是中考（初三 730）口径，初二尚未开设化学、也未考体育与实验操作，
+            直接对比会让差距虚高，因此切到初三后再查看对比结果。
           </div>
-        </div>
-        <div v-if="data.targetGap?.basis?.missingSubjects?.length" class="notice small" style="margin-top: 10px">
-          存在未录入的计入总分科目，对比结果偏低
-        </div>
+        </template>
+        <template v-else>
+          <div class="small muted" style="margin-bottom: 8px">
+            中考口径总分 {{ fmt(data.targetGap?.basis?.myTotal) }} / {{ fmt(data.targetGap?.basis?.totalFullScore, 0) }}
+          </div>
+          <div v-if="!targets.length" class="muted small">未配置目标院校</div>
+          <div v-else class="grid grid-3">
+            <div v-for="t in targets" :key="t.schoolId" class="stat">
+              <span class="label">{{ t.name }}</span>
+              <span class="value" style="font-size: 18px">{{ fmt(t.lineScore) }}</span>
+              <span class="small" :class="t.gap > 0 ? 'down' : 'up'">
+                {{ t.gap > 0 ? `需提分 ${fmt(t.gap)} 分` : `已超线 ${fmt(-t.gap)} 分` }}
+              </span>
+            </div>
+          </div>
+          <div v-if="data.targetGap?.basis?.missingSubjects?.length" class="notice small" style="margin-top: 10px">
+            还有 {{ data.targetGap.basis.missingSubjects.length }} 个计入总分科目（体育、理化生实验操作）尚未录入成绩，
+            对比结果偏低；这些科目考完后补录，差距会自动缩小。
+          </div>
+        </template>
       </div>
 
       <div class="card">
@@ -153,3 +181,23 @@ const subjectRows = computed(() =>
     </template>
   </div>
 </template>
+
+<style scoped>
+/* 桌面端：左 1/3 信息卡，右 2/3 趋势图 */
+.hero {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 12px;
+  align-items: stretch;
+}
+.hero-left {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+@media (max-width: 780px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

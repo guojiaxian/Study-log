@@ -14,4 +14,6 @@ export default async function examTypeRoutes(app) {
   });
 
   app.patch('/exam-types/:id', async (req) => ok({ id: svc.updateExamType(Number(req.params.id), req.body || {}) }));
+
+  app.delete('/exam-types/:id', async (req) => ok({ id: svc.deleteExamType(Number(req.params.id)) }));
 }

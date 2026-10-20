@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '../api/index.js';
+import GradeChips from '../components/GradeChips.vue';
 import { fmt } from '../utils/format.js';
 
 const router = useRouter();
@@ -11,6 +12,13 @@ const loading = ref(false);
 const error = ref('');
 const subjects = ref([]);
 const examTypes = ref([]);
+/** 学段决定科目集合与各科满分（初二/初三不同），解析与入库都要用它 */
+const grade = ref(9);
+const GRADE_OPTIONS = [
+  { value: 8, label: '初二' },
+  { value: 9, label: '初三' },
+];
+const gradeLabel = computed(() => (Number(grade.value) === 8 ? '初二' : '初三'));
 const taskId = ref(null);
 const model = ref('');
 const durationMs = ref(0);
@@ -23,14 +31,32 @@ const form = reactive({
   examName: '',
   examDate: new Date().toISOString().slice(0, 10),
   examType: 'month',
-  classRank: null, classSize: null, gradeRank: null, gradeSize: null,
+  classRank: null, gradeRank: null,
 });
+
+/** 点击学段 chips：与下拉 change 等价，重新按学段拉科目 */
+function onGradePick(v) {
+  if (Number(v) === Number(grade.value)) return;
+  grade.value = Number(v);
+  onGradeChange();
+}
+
+/** 按学段拉取科目字典，保证下拉选项与满分口径一致 */
+async function loadSubjects() {
+  const subs = await api.subjects(false, grade.value);
+  subjects.value = subs.list;
+}
+
+async function onGradeChange() {
+  error.value = '';
+  try { await loadSubjects(); } catch (e) { error.value = e.message; }
+}
 
 onMounted(async () => {
   try {
-    const [subs, types] = await Promise.all([api.subjects(false), api.examTypes()]);
-    subjects.value = subs.list;
+    const types = await api.examTypes();
     examTypes.value = types.list;
+    await loadSubjects();
   } catch (e) { error.value = e.message; }
 });
 
@@ -46,6 +72,7 @@ async function parse() {
       examName: form.examName || undefined,
       examDate: form.examDate,
       examType: form.examType,
+      grade: Number(grade.value),
     });
     taskId.value = res.taskId;
     model.value = res.model;
@@ -55,9 +82,13 @@ async function parse() {
     if (res.exam?.name) form.examName = res.exam.name;
     if (res.exam?.examDate) form.examDate = res.exam.examDate;
     if (res.exam?.examType) form.examType = res.exam.examType;
+    if ([8, 9].includes(Number(res.exam?.grade)) && Number(res.exam.grade) !== Number(grade.value)) {
+      grade.value = Number(res.exam.grade);
+      await loadSubjects();
+    }
     if (res.ranks) {
-      form.classRank = res.ranks.classRank; form.classSize = res.ranks.classSize;
-      form.gradeRank = res.ranks.gradeRank; form.gradeSize = res.ranks.gradeSize;
+      form.classRank = res.ranks.classRank;
+      form.gradeRank = res.ranks.gradeRank;
     }
     step.value = 2;
   } catch (e) {
@@ -98,9 +129,9 @@ async function commit() {
     const res = await api.commitParse({
       taskId: taskId.value,
       exam: {
-        name: form.examName.trim(), examDate: form.examDate, examType: form.examType, grade: 9, status: 'confirmed',
-        classRank: form.classRank || null, classSize: form.classSize || null,
-        gradeRank: form.gradeRank || null, gradeSize: form.gradeSize || null,
+        name: form.examName.trim(), examDate: form.examDate, examType: form.examType, grade: Number(grade.value), status: 'confirmed',
+        classRank: form.classRank || null,
+        gradeRank: form.gradeRank || null,
       },
       scores: payloadScores.value,
     });
@@ -111,13 +142,18 @@ async function commit() {
     loading.value = false;
   }
 }
+/** 返回上一页；无历史（直接打开/刷新）时退回管理页 */
+function goBack() {
+  if (window.history.length > 1) router.back();
+  else router.push('/manage');
+}
 </script>
 
 <template>
   <div>
     <div class="card-title">
       <h1>智能批量录入</h1>
-      <RouterLink to="/manage" class="btn btn-sm">← 返回</RouterLink>
+      <a href="javascript:void(0)" class="btn btn-sm" @click="goBack">← 返回</a>
     </div>
 
     <div class="steps">
@@ -143,6 +179,10 @@ async function commit() {
             <option v-for="t in examTypes" :key="t.code" :value="t.code">{{ t.name }}</option>
           </select>
         </div>
+        <div class="field">
+          <label>学段</label>
+          <GradeChips :model-value="grade" :options="GRADE_OPTIONS" @update:model-value="onGradePick" />
+        </div>
       </div>
       <div class="row" style="justify-content: flex-end">
         <button class="btn btn-primary" :disabled="loading" @click="parse">{{ loading ? '解析中…' : '开始解析' }}</button>
@@ -159,7 +199,7 @@ async function commit() {
       <div class="table-wrap">
         <table class="tbl">
           <thead>
-            <tr><th class="l">原始科目</th><th class="l">系统科目</th><th>得分 / 等级</th><th>中考满分</th><th>入库</th><th></th></tr>
+            <tr><th class="l">原始科目</th><th class="l">系统科目</th><th>得分 / 等级</th><th>{{ gradeLabel }}满分</th><th>入库</th><th></th></tr>
           </thead>
           <tbody>
             <tr v-for="(r, i) in items" :key="i">
@@ -192,11 +232,10 @@ async function commit() {
       <div class="row" style="margin-top: 12px">
         <div class="field"><label>考试名称</label><input v-model="form.examName" /></div>
         <div class="field"><label>考试日期</label><input v-model="form.examDate" type="date" /></div>
-        <div class="field"><label>班级人数</label><input v-model.number="form.classSize" type="number" /></div>
         <div class="field"><label>班级排名</label><input v-model.number="form.classRank" type="number" /></div>
-        <div class="field"><label>年级人数</label><input v-model.number="form.gradeSize" type="number" /></div>
         <div class="field"><label>年级排名</label><input v-model.number="form.gradeRank" type="number" /></div>
       </div>
+      <p class="small muted">班级/年级人数在「管理 → 排名人数设置」中统一维护，录入时自动带入。</p>
 
       <div v-if="warnings.length" class="notice small">
         <div v-for="(w, i) in warnings" :key="i">· {{ w.message }}</div>
